@@ -9,10 +9,11 @@ tags:
   - regression
 authors:
   - name: David Diaz-Solis
-    orcid: 0000-0000-0000-0000 # Placeholder
+  - email: ddiaz@fen.uchile.cl, daviddiazsolis@gmail.com
+    orcid: 0000-0001-7149-0535
     affiliation: 1
 affiliations:
- - name: Independent Researcher
+ - name: Departamento de Administración, FEN, Universidad de Chile.
    index: 1
 date: 28 November 2025
 bibliography: paper.bib
