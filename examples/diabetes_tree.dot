@@ -1,0 +1,83 @@
+// C5Regressor
+digraph {
+	root [label="s5 <= -0.00376118
+N=442.00"]
+	root -> rootL [label=True]
+	root -> rootR [label=False]
+	rootL [label="bmi <= 0.00618888
+N=218.00"]
+	rootL -> rootLL [label=True]
+	rootL -> rootLR [label=False]
+	rootLL [label="s3 <= 0.0210278
+N=171.00"]
+	rootLL -> rootLLL [label=True]
+	rootLL -> rootLLR [label=False]
+	rootLLL [label="Leaf
+value=108.805
+N=87.00"]
+	rootLLR [label="Leaf
+value=83.369
+N=84.00"]
+	rootLR [label="Leaf
+value=159.745
+N=47.00"]
+	rootR [label="bmi <= 0.0148114
+N=224.00"]
+	rootR -> rootRL [label=True]
+	rootR -> rootRR [label=False]
+	rootRL [label="bmi <= -0.0218342
+N=116.00"]
+	rootRL -> rootRLL [label=True]
+	rootRL -> rootRLR [label=False]
+	rootRLL [label="Leaf
+value=137.69
+N=42.00"]
+	rootRLR [label="s5 <= 0.0144472
+N=74.00"]
+	rootRLR -> rootRLRL [label=True]
+	rootRLR -> rootRLRR [label=False]
+	rootRLRL [label="Leaf
+value=139.944
+N=18.00"]
+	rootRLRR [label="s6 <= 0.0341302
+N=56.00"]
+	rootRLRR -> rootRLRRL [label=True]
+	rootRLRR -> rootRLRRR [label=False]
+	rootRLRRL [label="s6 <= -0.00314875
+N=43.00"]
+	rootRLRRL -> rootRLRRLL [label=True]
+	rootRLRRL -> rootRLRRLR [label=False]
+	rootRLRRLL [label="Leaf
+value=193.381
+N=21.00"]
+	rootRLRRLR [label="Leaf
+value=156.273
+N=22.00"]
+	rootRLRRR [label="Leaf
+value=236.154
+N=13.00"]
+	rootRR [label="bmi <= 0.068702
+N=108.00"]
+	rootRR -> rootRRL [label=True]
+	rootRR -> rootRRR [label=False]
+	rootRRL [label="bp <= 0.01614
+N=77.00"]
+	rootRRL -> rootRRLL [label=True]
+	rootRRL -> rootRRLR [label=False]
+	rootRRLL [label="Leaf
+value=178.212
+N=33.00"]
+	rootRRLR [label="Leaf
+value=231.341
+N=44.00"]
+	rootRRR [label="s2 <= 0.0218591
+N=31.00"]
+	rootRRR -> rootRRRL [label=True]
+	rootRRR -> rootRRRR [label=False]
+	rootRRRL [label="Leaf
+value=290.421
+N=19.00"]
+	rootRRRR [label="Leaf
+value=234.75
+N=12.00"]
+}
