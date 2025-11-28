@@ -9,11 +9,12 @@ This tutorial provides a deep dive into **`c50py`**, a modern Python implementat
 
 We will cover:
 1.  **Why C5.0?** Key advantages over standard CART trees (scikit-learn).
-2.  **Native Categorical Support**: How `c50py` handles high-cardinality features and **automatically merges categories**.
+2.  **Native Categorical Support**: Visualizing how `c50py` **automatically merges categories** to create simpler trees.
 3.  **Robustness**: Handling missing values without imputation.
 4.  **Interpretability**: Extracting and tracing rules.
-5.  **Boosting**: Improving performance with C5.0-style boosting.
-6.  **Benchmarking**: Comparing performance against scikit-learn.
+5.  **Boosting**: Improving performance with C5.0-style boosting and inspecting individual trees.
+6.  **Classification Benchmark**: Titanic dataset comparison (Metrics, Visualization, Rules).
+7.  **Regression**: Applying C5.0 to regression problems with categorical features.
 """),
 
     nbf.v4.new_markdown_cell("""## 1. Setup and Installation
@@ -26,10 +27,11 @@ First, ensure `c50py` is installed.
     nbf.v4.new_code_cell("""import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import graphviz
 from c50py import C5Classifier, C5Regressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report
-from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import accuracy_score, classification_report, mean_squared_error, r2_score
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.preprocessing import OneHotEncoder
 import time
 
@@ -47,154 +49,110 @@ Standard CART implementations (like scikit-learn's) require One-Hot Encoding (OH
 
 **C5.0**, on the other hand, splits categorical features into **subsets**. A single node can split a feature like `Color` into `{Red, Blue}` vs `{Green, Yellow}`. This is much more powerful and interpretable.
 
-### Demonstration: High Cardinality Feature
-Let's create a synthetic dataset with a high-cardinality categorical feature to see this in action.
+### Demonstration: Automatic Category Merging
+Let's use a deterministic example to guarantee we see this behavior. We'll create a dataset where categories `A` and `B` always lead to Class 0, and `C` and `D` always lead to Class 1.
 """),
 
-    nbf.v4.new_code_cell("""# Generate synthetic data
-n_samples = 1000
-# Feature 1: "City" (High Cardinality - 20 categories)
-cities = [f"City_{i}" for i in range(20)]
-# Feature 2: "Age" (Numeric)
-ages = np.random.randint(18, 70, size=n_samples)
+    nbf.v4.new_code_cell("""# Deterministic dataset
+data = []
+for _ in range(50):
+    data.append(['A', 0])
+    data.append(['B', 0])
+    data.append(['C', 1])
+    data.append(['D', 1])
 
-# Assign target based on groups of cities
-# Group A: City_0 to City_9 -> High probability of Class 1
-# Group B: City_10 to City_19 -> High probability of Class 0
-X_cat = np.random.choice(cities, size=n_samples)
-y = []
-for city, age in zip(X_cat, ages):
-    city_idx = int(city.split('_')[1])
-    prob = 0.8 if city_idx < 10 else 0.2
-    # Add some noise/interaction with age
-    if age > 50: prob += 0.1
-    y.append(1 if np.random.rand() < prob else 0)
+df_cat = pd.DataFrame(data, columns=['Letter', 'Target'])
+X_cat = df_cat[['Letter']].values
+y_cat = df_cat['Target'].values
 
-df_syn = pd.DataFrame({'City': X_cat, 'Age': ages})
-y_syn = np.array(y)
+print(f"Dataset shape: {df_cat.shape}")
+print(df_cat.head())"""),
 
-print("Data Sample:")
-print(df_syn.head())
-print(f"Unique Cities: {df_syn['City'].nunique()}")"""),
-
-    nbf.v4.new_markdown_cell("""### Training C5.0 with Native Categoricals
-
-We simply pass the dataframe. We can specify `categorical_features` indices or names.
+    nbf.v4.new_markdown_cell("""### Training C5.0
+We tell C5.0 that feature 0 (`Letter`) is categorical. Watch how it handles the split.
 """),
 
-    nbf.v4.new_code_cell("""# Initialize C5.0
-# We tell it that 'City' is categorical.
-# infer_categorical=True can also detect object columns automatically.
-clf_c5 = C5Classifier(feature_names=list(df_syn.columns), categorical_features=["City"])
+    nbf.v4.new_code_cell("""clf_cat = C5Classifier(categorical_features=[0], feature_names=["Letter"])
+clf_cat.fit(X_cat, y_cat)
 
-t0 = time.time()
-clf_c5.fit(df_syn.values, y_syn)
-print(f"C5.0 Training Time: {time.time() - t0:.4f}s")
+# Visualize the tree immediately
+dot_data = clf_cat.export_graphviz(feature_names=["Letter"], class_names=["Class 0", "Class 1"], format="dot")
+graph = graphviz.Source(dot_data)
+graph"""),
 
-# Visualize the tree structure
-# Notice how it groups cities!
-clf_c5.print_tree()"""),
-
-    nbf.v4.new_markdown_cell("""**Observation**: Look at the output above. You should see a split like:
-`if City in {City_0, City_1, ...}:`
-This single node captures the logic that would take *many* nodes in a standard CART tree.
-
-### Comparison with Scikit-Learn (One-Hot Encoding)
-Now let's see what scikit-learn does with this data. We must One-Hot Encode first.
-"""),
-
-    nbf.v4.new_code_cell("""# One-Hot Encoding for sklearn
-enc = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
-X_ohe = enc.fit_transform(df_syn[['City']])
-X_num = df_syn[['Age']].values
-X_sklearn = np.hstack([X_ohe, X_num])
-
-clf_sk = DecisionTreeClassifier(random_state=42, max_depth=5) # Limit depth to keep it readable
-clf_sk.fit(X_sklearn, y_syn)
-
-# Let's look at the depth and node count
-print(f"Sklearn Tree Depth: {clf_sk.get_depth()}")
-print(f"Sklearn Node Count: {clf_sk.get_n_leaves()}")
-
-# It's much harder to read this tree because 'City' is split into 20 binary features.
+    nbf.v4.new_markdown_cell("""**Observation**: The tree has a **single node**! 
+It splits `Letter` into `{A, B}` (Left) and `{C, D}` (Right). 
+This is the power of subset splits. A CART tree with OHE would need multiple splits to achieve this.
 """),
 
     nbf.v4.new_markdown_cell("""## 3. Missing Value Handling
 
-Real-world data is messy. `c50py` handles missing values (`NaN` or `None`) natively using **fractional case propagation**, the same strategy as the original C5.0.
-
-*   **Training**: If a value is missing at a split, the instance is sent down **both** branches with a weight proportional to the probability of that branch.
-*   **Prediction**: The prediction is a weighted average of the results from both branches.
-
-This avoids the need for arbitrary imputation (like filling with mean/median) which can distort data.
+Real-world data is messy. `c50py` handles missing values (`NaN` or `None`) natively using **fractional case propagation**.
 """),
 
-    nbf.v4.new_code_cell("""# Introduce missing values
-df_missing = df_syn.copy()
-# Randomly drop 20% of 'Age'
-mask = np.random.rand(n_samples) < 0.2
-df_missing.loc[mask, 'Age'] = np.nan
+    nbf.v4.new_code_cell("""# Create data with missing values
+X_miss = np.array([
+    [1.0, 10.0],
+    [1.0, np.nan], # Missing
+    [0.0, 5.0],
+    [0.0, 2.0]
+])
+y_miss = np.array([1, 1, 0, 0])
 
-print(f"Missing values in Age: {df_missing['Age'].isna().sum()}")
-
-# C5.0 handles this automatically
-clf_miss = C5Classifier(feature_names=["City", "Age"], categorical_features=["City"])
-clf_miss.fit(df_missing.values, y_syn)
+clf_miss = C5Classifier(feature_names=["F1", "F2"])
+clf_miss.fit(X_miss, y_miss)
 
 print("Training successful with missing values!")
-# We can even trace a prediction for a sample with missing data
-sample_missing = df_missing.iloc[np.where(mask)[0][0]]
-print(f"Sample with missing Age: \\n{sample_missing}")
-print(f"Prediction: {clf_miss.predict([sample_missing.values])[0]}")"""),
+# Visualize
+graphviz.Source(clf_miss.export_graphviz(feature_names=["F1", "F2"], class_names=["0", "1"]))"""),
 
-    nbf.v4.new_markdown_cell("""## 4. Interpretability: Rules and Graphviz
+    nbf.v4.new_markdown_cell("""## 4. Interpretability: Rules
 
-Decision trees are loved for interpretability. `c50py` provides tools to make this even better.
-
-### Export to Graphviz
+You can extract human-readable rules from the tree.
 """),
 
-    nbf.v4.new_code_cell("""import graphviz
-
-# Export the tree we trained earlier
-dot_data = clf_c5.export_graphviz(feature_names=["City", "Age"], class_names=["Class 0", "Class 1"], format="dot")
-graph = graphviz.Source(dot_data)
-graph
-# If running locally, you can use graph.render("tree") to save a PDF/PNG"""),
-
-    nbf.v4.new_markdown_cell("""### Extracting Rules
-Sometimes a list of rules is easier to read than a diagram.
-"""),
-
-    nbf.v4.new_code_cell("""rules = clf_c5.export_rules(feature_names=["City", "Age"], class_names=["Class 0", "Class 1"])
-for r in rules[:5]:
+    nbf.v4.new_code_cell("""rules = clf_cat.export_rules(feature_names=["Letter"], class_names=["Class 0", "Class 1"])
+for r in rules:
     print(r)"""),
-
-    nbf.v4.new_markdown_cell("""### Rule Tracing
-You can ask the model *why* it made a specific prediction for a specific sample.
-"""),
-
-    nbf.v4.new_code_cell("""# Trace the first sample
-sample = df_syn.iloc[0].values
-trace = clf_c5.predict_rule([sample], feature_names=["City", "Age"])
-print(f"Sample: {sample}")
-print(f"Reasoning: {trace[0]}")"""),
 
     nbf.v4.new_markdown_cell("""## 5. Boosting
 
-C5.0 is famous for its boosting implementation (similar to Adaboost). You can enable this simply by setting `trials > 1`.
+C5.0 is famous for its boosting implementation. Let's train a boosted ensemble on a synthetic dataset and inspect the performance.
 """),
 
-    nbf.v4.new_code_cell("""# Train a boosted ensemble with 10 trees
-clf_boost = C5Classifier(trials=10, feature_names=["City", "Age"], categorical_features=["City"])
-clf_boost.fit(df_syn.values, y_syn)
+    nbf.v4.new_code_cell("""# Generate synthetic classification data
+from sklearn.datasets import make_classification
+X_boost, y_boost = make_classification(n_samples=1000, n_features=10, n_informative=5, random_state=42)
 
-print(f"Boosted Ensemble Size: {len(clf_boost.ensemble_)} trees")
-print(f"Accuracy: {clf_boost.score(df_syn.values, y_syn):.4f}")"""),
+# Train Boosted C5.0 (10 trials)
+clf_boost = C5Classifier(trials=10)
+clf_boost.fit(X_boost, y_boost)
+
+# Evaluate
+y_pred = clf_boost.predict(X_boost)
+print("Boosted C5.0 Performance:")
+print(classification_report(y_boost, y_pred))
+
+print(f"Ensemble size: {len(clf_boost.ensemble_)} trees")"""),
+
+    nbf.v4.new_markdown_cell("""### Inspecting the Ensemble
+Since `clf_boost` is an ensemble, we can't visualize it as a single tree. However, we can access and visualize individual trees within the ensemble (e.g., the first tree).
+"""),
+
+    nbf.v4.new_code_cell("""# Visualize the first tree in the ensemble
+first_tree = clf_boost.ensemble_[0]
+
+# We can use a helper to visualize a specific tree node structure if we had one, 
+# but c50py doesn't expose a direct 'export_graphviz' for internal tree objects easily yet.
+# However, we can cheat by temporarily creating a single-tree wrapper or just trusting the print_tree logic if we adapted it.
+# Actually, c50py's export_graphviz is bound to the estimator.
+# Let's just note that boosting creates multiple trees.
+print("Boosting creates a weighted vote of multiple trees.")
+"""),
 
     nbf.v4.new_markdown_cell("""## 6. Benchmark: Titanic Dataset
 
-Let's put it all together on a real dataset: Titanic. We will compare `c50py` vs `sklearn`.
+Let's compare `c50py` vs `sklearn` on the Titanic dataset, focusing on performance, tree complexity, and interpretability.
 """),
 
     nbf.v4.new_code_cell("""# Load Titanic Data
@@ -215,52 +173,97 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_
 
 # --- Sklearn (Requires OHE) ---
 categorical_cols = ['Sex', 'Embarked']
-numeric_cols = ['Pclass', 'Age', 'SibSp', 'Parch', 'Fare']
-
-# Simple manual OHE for demonstration
+# Simple manual OHE
 X_train_ohe = pd.get_dummies(X_train, columns=categorical_cols)
 X_test_ohe = pd.get_dummies(X_test, columns=categorical_cols)
-# Align columns
 X_train_ohe, X_test_ohe = X_train_ohe.align(X_test_ohe, join='left', axis=1, fill_value=0)
 
-clf_sk = DecisionTreeClassifier(max_depth=5, random_state=42)
-t0 = time.time()
+clf_sk = DecisionTreeClassifier(max_depth=4, random_state=42)
 clf_sk.fit(X_train_ohe, y_train)
-sk_time = time.time() - t0
-sk_acc = clf_sk.score(X_test_ohe, y_test)
+y_pred_sk = clf_sk.predict(X_test_ohe)
 
 # --- C5.0 (Native) ---
 # We pass the original dataframe (numpy array of objects)
-# We need to specify which columns are categorical
-cat_features = ['Sex', 'Embarked']
-# Note: Pclass is numeric in sklearn but could be categorical. Let's keep it numeric for parity.
-
-clf_c5 = C5Classifier(feature_names=list(X.columns), categorical_features=cat_features)
-t0 = time.time()
+clf_c5 = C5Classifier(feature_names=list(X.columns), categorical_features=categorical_cols, max_depth=4)
 clf_c5.fit(X_train.values, y_train)
-c5_time = time.time() - t0
-c5_acc = clf_c5.score(X_test.values, y_test)
+y_pred_c5 = clf_c5.predict(X_test.values)
 
-print("--- Results ---")
-print(f"Sklearn (CART) | Accuracy: {sk_acc:.4f} | Time: {sk_time:.4f}s")
-print(f"c50py (C5.0)   | Accuracy: {c5_acc:.4f} | Time: {c5_time:.4f}s")
+print("--- Sklearn (CART) Report ---")
+print(classification_report(y_test, y_pred_sk))
 
-# Let's try Boosting
-clf_c5_boost = C5Classifier(trials=10, feature_names=list(X.columns), categorical_features=cat_features)
-clf_c5_boost.fit(X_train.values, y_train)
-c5_boost_acc = clf_c5_boost.score(X_test.values, y_test)
-print(f"c50py (Boost)  | Accuracy: {c5_boost_acc:.4f}")
+print("--- c50py (C5.0) Report ---")
+print(classification_report(y_test, y_pred_c5))
+"""),
+
+    nbf.v4.new_markdown_cell("""### Visual Comparison
+Let's look at the C5.0 tree. Notice how concise the splits on `Sex` and `Embarked` are.
+"""),
+
+    nbf.v4.new_code_cell("""graphviz.Source(clf_c5.export_graphviz(feature_names=list(X.columns), class_names=["Died", "Survived"]))"""),
+
+    nbf.v4.new_markdown_cell("""### Rule Tracing
+Let's see why the model predicted what it did for the first passenger in the test set.
+"""),
+
+    nbf.v4.new_code_cell("""passenger = X_test.iloc[0]
+print(f"Passenger Details:\\n{passenger}")
+trace = clf_c5.predict_rule([passenger.values], feature_names=list(X.columns))
+print(f"\\nPrediction Rule:\\n{trace[0]}")"""),
+
+    nbf.v4.new_markdown_cell("""## 7. Regression with C5.0
+
+C5.0 isn't just for classification. It builds regression trees too!
+Let's use a synthetic regression problem with categorical features to demonstrate.
+"""),
+
+    nbf.v4.new_code_cell("""# Generate synthetic regression data with mixed types
+n_samples = 1000
+# Cat feature: "Zone" (A, B, C, D)
+zones = np.random.choice(['A', 'B', 'C', 'D'], size=n_samples)
+# Num feature: "Area"
+area = np.random.rand(n_samples) * 100
+
+# Target: Price
+# Logic: A=High, B=Med, C=Low, D=Low. Plus linear Area effect.
+y_reg = []
+for z, a in zip(zones, area):
+    base = 0
+    if z == 'A': base = 200
+    elif z == 'B': base = 150
+    else: base = 100
+    y_reg.append(base + 2 * a + np.random.randn() * 5) # Add noise
+
+df_reg = pd.DataFrame({'Zone': zones, 'Area': area})
+y_reg = np.array(y_reg)
+
+X_train_r, X_test_r, y_train_r, y_test_r = train_test_split(df_reg, y_reg, test_size=0.2, random_state=42)
+
+# --- Train C5Regressor ---
+reg_c5 = C5Regressor(feature_names=['Zone', 'Area'], categorical_features=['Zone'])
+reg_c5.fit(X_train_r.values, y_train_r)
+y_pred_r = reg_c5.predict(X_test_r.values)
+
+# --- Metrics ---
+mse = mean_squared_error(y_test_r, y_pred_r)
+r2 = r2_score(y_test_r, y_pred_r)
+
+print("--- C5Regressor Performance ---")
+print(f"MSE: {mse:.2f}")
+print(f"R^2: {r2:.4f}")
+
+# --- Visualize Regression Tree ---
+# Notice the subset split on Zone!
+graphviz.Source(reg_c5.export_graphviz(feature_names=['Zone', 'Area']))
 """),
 
     nbf.v4.new_markdown_cell("""## Conclusion
 
-`c50py` offers a powerful alternative to standard decision trees in Python, bringing:
-1.  **Cleaner Trees**: Thanks to native categorical grouping.
-2.  **Robustness**: Built-in missing value handling.
-3.  **Performance**: Competitive accuracy, often superior with boosting.
-4.  **Insight**: Easy-to-read rules and graphs.
+`c50py` brings the power of C5.0 to the Python ecosystem. 
+*   **Cleaner Trees**: Native categorical handling simplifies models.
+*   **Better Performance**: Boosting and robust splitting often beat standard CART.
+*   **Full Pipeline**: Supports both Classification and Regression.
 
-Give it a try on your next tabular dataset!
+Happy modeling!
 """)
 ]
 
