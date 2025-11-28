@@ -2,9 +2,7 @@
 
 Welcome to the comprehensive usage guide for `c50py`. This guide covers everything from installation to advanced features like boosting and rule extraction.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_USERNAME/c50py/blob/main/examples/c50py_tour.ipynb)
-
-**Note:** Replace `YOUR_USERNAME` in the link above with your actual GitHub username after pushing the repository.
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/daviddiazsolis/c50py/blob/main/examples/c50py_tour.ipynb)
 
 ## Table of Contents
 1. [Installation](#installation)
