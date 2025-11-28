@@ -1,6 +1,6 @@
-# c5py — C5.0‑style Decision Trees for Python (clean 0.2.0)
+# c50py — C5.0‑style Decision Trees for Python (clean 0.2.0)
 
-`c5py` provides transparent, easily inspectable decision trees modelled on
+`c50py` provides transparent, easily inspectable decision trees modelled on
 Quinlan’s C5.0 algorithm.  Both classification and regression trees are
 supported and expose a scikit‑learn‑like API.  The implementation is written
 from scratch in pure Python/Numpy and includes support for numeric and
