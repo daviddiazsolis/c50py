@@ -898,6 +898,9 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
                     # Penalize by fraction of known values (C5.0 logic)
                     gr *= frac_known
                     
+                    if left.sum() < self.min_samples_leaf or right.sum() < self.min_samples_leaf:
+                        continue
+                    
                     if gr > best_gain:
                         swL = left.sum()
                         swR = right.sum()
@@ -935,6 +938,9 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
                     left = SW[i]; right = total - left
                     gr = _gain_ratio(parent_known, [left, right])
                     gr *= frac_known
+                    
+                    if left.sum() < self.min_samples_leaf or right.sum() < self.min_samples_leaf:
+                        continue
                     
                     if gr > best_gain:
                         thr = 0.5 * (v[i] + v[i+1])
