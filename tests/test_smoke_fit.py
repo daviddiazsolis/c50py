@@ -1,5 +1,5 @@
 import numpy as np
-from c5py import C5Classifier, C5Regressor
+from c50py import C5Classifier, C5Regressor
 
 def test_classifier_smoke():
     X = np.array([[1,'A'],[2,'A'],[3,'B'],[4,'B']], dtype=object)

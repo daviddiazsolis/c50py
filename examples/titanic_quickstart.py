@@ -1,6 +1,6 @@
 import pandas as pd
 from time import perf_counter
-from c5py import C5Classifier
+from c50py import C5Classifier
 
 df = pd.read_csv("titanic.csv")
 feats = ["pclass","sex","age","sibsp","parch","fare","embarked"]

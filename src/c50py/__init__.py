@@ -1,6 +1,6 @@
-# c5py/__init__.py
+# c50py/__init__.py
 """
-c5py: C5.0-like Decision Trees in pure Python (scikit-learn style).
+c50py: C5.0-like Decision Trees in pure Python (scikit-learn style).
 
 Exports:
     - C5Classifier

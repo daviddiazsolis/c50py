@@ -1,8 +1,8 @@
-# c5py Usage Guide
+# c50py Usage Guide
 
-Welcome to the comprehensive usage guide for `c5py`. This guide covers everything from installation to advanced features like boosting and rule extraction.
+Welcome to the comprehensive usage guide for `c50py`. This guide covers everything from installation to advanced features like boosting and rule extraction.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_USERNAME/c5py/blob/main/examples/c5py_tour.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_USERNAME/c50py/blob/main/examples/c50py_tour.ipynb)
 
 **Note:** Replace `YOUR_USERNAME` in the link above with your actual GitHub username after pushing the repository.
 
@@ -20,16 +20,16 @@ Welcome to the comprehensive usage guide for `c5py`. This guide covers everythin
 
 ## Installation
 
-You can install `c5py` directly from PyPI:
+You can install `c50py` directly from PyPI:
 
 ```bash
-pip install c5py
+pip install c50py
 ```
 
 To use the visualization features, you should also install `graphviz`:
 
 ```bash
-pip install c5py[graphviz]
+pip install c50py[graphviz]
 ```
 
 ## Basic Classification (Titanic)
@@ -38,7 +38,7 @@ Here's how to train a simple classification tree.
 
 ```python
 import pandas as pd
-from c5py import C5Classifier
+from c50py import C5Classifier
 
 # Load data
 url = "https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv"
@@ -64,11 +64,11 @@ clf.print_tree()
 
 ## Basic Regression (Diabetes)
 
-`c5py` also supports regression.
+`c50py` also supports regression.
 
 ```python
 from sklearn.datasets import load_diabetes
-from c5py import C5Regressor
+from c50py import C5Regressor
 
 data = load_diabetes()
 X, y = data.data, data.target
@@ -83,7 +83,7 @@ print(f"R^2 Score: {reg.score(X, y):.4f}")
 ## Advanced Features
 
 ### Categorical Features
-`c5py` handles categorical variables natively (without one-hot encoding). You can specify them by index or name.
+`c50py` handles categorical variables natively (without one-hot encoding). You can specify them by index or name.
 
 ```python
 # By name (requires feature_names in fit or init)
@@ -94,7 +94,7 @@ clf = C5Classifier(categorical_features=[0, 3])
 ```
 
 ### Missing Values
-`c5py` implements C5.0's "fractional propagation" strategy. If a value is missing during prediction, the instance is split down *all* branches, weighted by the probability of each branch (observed during training).
+`c50py` implements C5.0's "fractional propagation" strategy. If a value is missing during prediction, the instance is split down *all* branches, weighted by the probability of each branch (observed during training).
 
 ```python
 import numpy as np

@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import pytest
-from c5py import C5Classifier
+from c50py import C5Classifier
 
 
 def _tiny_dataset():

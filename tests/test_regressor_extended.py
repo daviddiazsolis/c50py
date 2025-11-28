@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import pytest
-from c5py import C5Regressor
+from c50py import C5Regressor
 
 
 def _tiny_reg_dataset():

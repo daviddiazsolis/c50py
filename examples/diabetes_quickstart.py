@@ -1,6 +1,6 @@
 import pandas as pd, numpy as np
 from time import perf_counter
-from c5py import C5Regressor
+from c50py import C5Regressor
 
 df = pd.read_csv("diabetes.csv")
 y = df["target"].values

@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from c5py import C5Classifier
+from c50py import C5Classifier
 
 def test_sample_weights():
     # Case 1: Two identical points, one with weight 2, should be equivalent to 3 identical points
