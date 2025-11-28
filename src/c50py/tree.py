@@ -470,7 +470,7 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
         self._collect_rules(self.tree_, [], rules, feature_names, class_names)
         return rules
 
-    def export_graphviz(self, filename: str = "c5_tree", *, feature_names=None,
+    def export_graphviz(self, filename: str | None = None, *, feature_names=None,
                         class_names=None, format: str = "png") -> str:
         """
         Export the tree structure in Graphviz format.
@@ -487,9 +487,10 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
 
         Parameters
         ----------
-        filename : str, default="c5_tree"
+        filename : str or None, default=None
             Basename of the output file (the extension is determined by
-            ``format``).
+            ``format``). If None, the DOT source code is returned as a string
+            and no file is written.
         feature_names : list[str], optional
             Custom names for the input features.  Defaults to the names
             provided at construction time.
@@ -505,8 +506,7 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
         Returns
         -------
         str
-            Path to the written file.  If a fallback to ``.dot`` is used the
-            returned path will reflect that extension.
+            Path to the written file, or the DOT source code if filename is None.
 
         Raises
         ------
@@ -525,6 +525,10 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
             raise RuntimeError("Graphviz is required for export_graphviz but not installed.")
         dot = graphviz.Digraph(format=format)
         self._add_graph_nodes(dot, self.tree_, "0", feature_names, class_names)
+        
+        if filename is None:
+            return dot.source
+            
         # If the user requests a dot file we avoid invoking the external
         # Graphviz binary entirely: save the dot source and return.
         if format.lower() == "dot":
@@ -883,30 +887,46 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
                 sorted_vals = sorted(val_dists.keys(), key=lambda x: val_weights[x], reverse=True)
                 candidates = sorted_vals[:int(getattr(self, "max_categories_exhaustive", 12))]
                 
-                for v in candidates:
-                    left = val_dists[v]
-                    # Right is all known minus left
-                    # Note: parent includes missing values if we used w, but here we want to split knowns?
-                    # Gain ratio is usually calculated on known values and then penalized.
-                    # Let's calculate parent_known
-                    parent_known = self._class_distribution_vector(y_known, w_known)
-                    right = parent_known - left
-                    
-                    # Gain ratio on known values
-                    gr = _gain_ratio(parent_known, [left, right])
-                    
-                    # Penalize by fraction of known values (C5.0 logic)
-                    gr *= frac_known
-                    
-                    if left.sum() < self.min_samples_leaf or right.sum() < self.min_samples_leaf:
-                        continue
-                    
-                    if gr > best_gain:
-                        swL = left.sum()
-                        swR = right.sum()
-                        pl = swL / (swL + swR) if (swL + swR) > 0 else 0.5
-                        best_gain, best_feat, best_thr, best_type = float(gr), j, frozenset([v]), "categorical"
-                        best_pl, best_pr = pl, 1.0 - pl
+                # Exhaustive subset search
+                import itertools
+                n_cats = len(candidates)
+                
+                # If too many categories, fallback to one-vs-rest or heuristic?
+                # For now, we respect max_categories_exhaustive.
+                # We iterate combinations of size 1 to n_cats // 2
+                
+                parent_known = self._class_distribution_vector(y_known, w_known)
+                
+                # Optimization: pre-calculate dists for candidates
+                cand_dists = [val_dists[v] for v in candidates]
+                
+                for r in range(1, (n_cats // 2) + 1):
+                    for subset_indices in itertools.combinations(range(n_cats), r):
+                        # Construct left node distribution
+                        left = np.zeros_like(parent_known)
+                        subset_vals = []
+                        for idx in subset_indices:
+                            left += cand_dists[idx]
+                            subset_vals.append(candidates[idx])
+                        
+                        right = parent_known - left
+                        
+                        # Check min_samples_leaf
+                        if left.sum() < self.min_samples_leaf or right.sum() < self.min_samples_leaf:
+                            continue
+
+                        # Gain ratio on known values
+                        gr = _gain_ratio(parent_known, [left, right])
+                        
+                        # Penalize by fraction of known values (C5.0 logic)
+                        gr *= frac_known
+                        
+                        if gr > best_gain:
+                            swL = left.sum()
+                            swR = right.sum()
+                            pl = swL / (swL + swR) if (swL + swR) > 0 else 0.5
+                            best_gain, best_feat, best_thr, best_type = float(gr), j, frozenset(subset_vals), "categorical"
+                            best_pl, best_pr = pl, 1.0 - pl
             else:
                 # Weighted numeric split
                 vv = v_known.astype(float, copy=False)

@@ -329,20 +329,6 @@ class C5Regressor(BaseEstimator, RegressorMixin):
         features.  Custom feature names can be supplied; if omitted the
         names provided at construction time are used.
 
-        Parameters
-        ----------
-        feature_names : list[str], optional
-            Names for the input features.
-
-        Returns
-        -------
-        list[str]
-            A list of rule strings.  Each string has the form
-            ``"<antecedent> => value=<prediction> (N=<weight>)"``.
-
-        Raises
-        ------
-        ValueError
             If the model has not been fitted.
         """
         # Guard against calling before fit
@@ -431,7 +417,7 @@ class C5Regressor(BaseEstimator, RegressorMixin):
             parts.append(f"{name} " + ("IN " if in_left else "NOT IN ") + S)
             return self._trace_rule(x, node.children["left" if in_left else "right"], fn, parts)
 
-    def export_graphviz(self, filename: str = "c5_reg_tree", feature_names: Optional[List[str]] = None,
+    def export_graphviz(self, filename: str | None = None, feature_names: Optional[List[str]] = None,
                         format: str = "png") -> str:
         """
         Export the regression tree to Graphviz format.
@@ -444,8 +430,9 @@ class C5Regressor(BaseEstimator, RegressorMixin):
 
         Parameters
         ----------
-        filename : str, default="c5_reg_tree"
-            Basename of the output file.
+        filename : str or None, default=None
+            Basename of the output file. If None, the DOT source code is returned
+            as a string and no file is written.
         feature_names : list[str], optional
             Names for the input features.  Defaults to those provided at
             construction time.
@@ -456,8 +443,7 @@ class C5Regressor(BaseEstimator, RegressorMixin):
         Returns
         -------
         str
-            Path to the written file.  If a fallback to ``.dot`` occurs the
-            returned path reflects that extension.
+            Path to the written file, or the DOT source code if filename is None.
 
         Raises
         ------
@@ -474,6 +460,10 @@ class C5Regressor(BaseEstimator, RegressorMixin):
             raise RuntimeError("Please install the 'graphviz' Python package.") from e
         dot = Digraph(comment="C5Regressor", format=format)
         self._add_graph_nodes(dot, self.tree_, "root", fn)
+        
+        if filename is None:
+            return dot.source
+
         # dot-only output does not require calling the external binary
         if format.lower() == "dot":
             path = f"{filename}.dot"
@@ -544,11 +534,6 @@ class C5Regressor(BaseEstimator, RegressorMixin):
                     any_str = any((isinstance(v, str) for v in col if not _isnan_scalar(v)))
                     any_bool = any((isinstance(v, (bool, np.bool_)) for v in col if not _isnan_scalar(v)))
                     if any_str or any_bool:
-                        is_cat[j] = True
-                elif self.int_as_categorical and np.issubdtype(col.dtype, np.integer):
-                    # treat integer as categorical if cardinality is not too large
-                    uniq = set(v for v in col if not _isnan_scalar(v))
-                    if len(uniq) <= self.max_categories:
                         is_cat[j] = True
         return is_cat
 

@@ -2,7 +2,7 @@
 
 **`c50py`** is a modern Python implementation of Quinlan's C5.0 algorithm, designed to be a drop-in replacement for scikit-learn's `DecisionTreeClassifier` but with powerful additional features.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/daviddiazsolis/c50py/blob/master/examples/c50py_comprehensive_tutorial.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/daviddiazsolis/c50py/blob/main/examples/c50py_comprehensive_tutorial.ipynb)
 
 ## Why C5.0?
 
