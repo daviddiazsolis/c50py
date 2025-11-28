@@ -17,7 +17,7 @@ from sklearn.compose import ColumnTransformer
 import os # Necesario para os.path.dirname
 
 # Importar los clasificadores de c5py
-from c5py import C5Classifier
+from c50py import C5Classifier
 
 # Importar clasificadores de scikit-learn para comparación
 from sklearn.tree import DecisionTreeClassifier

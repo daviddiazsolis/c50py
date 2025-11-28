@@ -269,7 +269,7 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
         self.classes_ = None
         self.n_features_ = None
 
-    def fit(self, X, y, sample_weight=None):
+    def fit(self, X, y, sample_weight=None, feature_names=None):
         X = np.asarray(X)
         y = np.asarray(y)
         if sample_weight is None:
@@ -281,7 +281,11 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
 
         # Map categorical feature names to indices
         n_features = X.shape[1]
-        if self.feature_names_ is None:
+        if feature_names is not None:
+             if len(feature_names) != n_features:
+                 raise ValueError("feature_names length must match X.shape[1]")
+             self.feature_names_ = list(feature_names)
+        elif self.feature_names_ is None:
             self.feature_names_ = [f"f{i}" for i in range(n_features)]
         cf = self.categorical_features
         if cf is not None:

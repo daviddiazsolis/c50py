@@ -212,7 +212,7 @@ class C5Regressor:
 
     # ----------------------------- Public API -----------------------------
 
-    def fit(self, X, y, sample_weight: Optional[np.ndarray] = None):
+    def fit(self, X, y, sample_weight: Optional[np.ndarray] = None, feature_names: Optional[List[str]] = None):
         X = np.asarray(X, dtype=object)
         y = _as_float_array(y)
         n, m = X.shape
@@ -223,9 +223,16 @@ class C5Regressor:
             if w.shape[0] != n:
                 raise ValueError("sample_weight must have same length as y")
 
-        if self.feature_names is not None and len(self.feature_names) != m:
+        if feature_names is not None:
+            if len(feature_names) != m:
+                raise ValueError("feature_names length must match X.shape[1]")
+            self.feature_names_ = list(feature_names)
+        elif self.feature_names is not None and len(self.feature_names) != m:
             raise ValueError("feature_names length must match X.shape[1]")
-        self.feature_names_ = list(self.feature_names) if self.feature_names is not None else None
+        elif self.feature_names is not None:
+             self.feature_names_ = list(self.feature_names)
+        else:
+             self.feature_names_ = None
 
         self.is_cat_ = self._infer_categorical_features(X)
         # Gather categorical values up to cap

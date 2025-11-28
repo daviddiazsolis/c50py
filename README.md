@@ -65,7 +65,7 @@ Fit a regression tree to the diabetes dataset and obtain a visualisation:
 ```python
 import pandas as pd
 from time import perf_counter
-from c5py import C5Regressor
+from c50py import C5Regressor
 
 df = pd.read_csv("diabetes.csv")
 y = df["target"].values
