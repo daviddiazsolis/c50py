@@ -1,142 +1,120 @@
 # c50py Usage Guide
 
-Welcome to the comprehensive usage guide for `c50py`. This guide covers everything from installation to advanced features like boosting and rule extraction.
+**`c50py`** is a modern Python implementation of Quinlan's C5.0 algorithm, designed to be a drop-in replacement for scikit-learn's `DecisionTreeClassifier` but with powerful additional features.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/daviddiazsolis/c50py/blob/main/examples/c50py_tour.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/daviddiazsolis/c50py/blob/master/examples/c50py_comprehensive_tutorial.ipynb)
 
-## Table of Contents
-1. [Installation](#installation)
-2. [Basic Classification (Titanic)](#basic-classification-titanic)
-3. [Basic Regression (Diabetes)](#basic-regression-diabetes)
-4. [Advanced Features](#advanced-features)
-    - [Categorical Features](#categorical-features)
-    - [Missing Values](#missing-values)
-    - [Sample Weights](#sample-weights)
-    - [Boosting](#boosting)
-    - [Rule Extraction](#rule-extraction)
-    - [Visualization](#visualization)
+## Why C5.0?
+
+While scikit-learn's CART implementation is excellent, C5.0 offers distinct advantages for many real-world datasets:
+
+1.  **Native Categorical Support**: No need for One-Hot Encoding. Splits are based on subsets of categories (e.g., `{A, B} vs {C, D}`), leading to simpler, more interpretable trees.
+2.  **Robust Missing Value Handling**: Uses fractional case propagation instead of imputation, preserving data integrity.
+3.  **Rule-Based Models**: Can generate easy-to-read rulesets.
+4.  **Boosting**: Implements C5.0-style boosting (similar to AdaBoost.M1) for higher accuracy.
+
+---
 
 ## Installation
-
-You can install `c50py` directly from PyPI:
 
 ```bash
 pip install c50py
 ```
 
-To use the visualization features, you should also install `graphviz`:
+## Quickstart
 
-```bash
-pip install c50py[graphviz]
-```
-
-## Basic Classification (Titanic)
-
-Here's how to train a simple classification tree.
+### Classification
 
 ```python
-import pandas as pd
 from c50py import C5Classifier
+from sklearn.datasets import load_iris
 
-# Load data
-url = "https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv"
-df = pd.read_csv(url)
-df = df.dropna(subset=["Embarked"]) # Drop rows with missing target or minimal preprocessing
-
-# Select features
-features = ["Pclass", "Sex", "Age", "SibSp", "Parch", "Fare", "Embarked"]
-X = df[features].values
-y = df["Survived"].values
-
-# Initialize and fit
-# We specify categorical features by name to let the model handle them appropriately
-clf = C5Classifier(
-    min_samples_split=20,
-    categorical_features=["Pclass", "Sex", "Embarked"]
-)
-clf.fit(X, y, feature_names=features)
-
-# Print the tree structure
-clf.print_tree()
+X, y = load_iris(return_X_y=True)
+clf = C5Classifier(min_samples_leaf=2)
+clf.fit(X, y)
+print(f"Accuracy: {clf.score(X, y):.4f}")
 ```
 
-## Basic Regression (Diabetes)
-
-`c50py` also supports regression.
+### Regression
 
 ```python
-from sklearn.datasets import load_diabetes
 from c50py import C5Regressor
+from sklearn.datasets import load_diabetes
 
-data = load_diabetes()
-X, y = data.data, data.target
-features = data.feature_names
-
-reg = C5Regressor(min_samples_split=10, pruning=True)
-reg.fit(X, y, feature_names=features)
-
+X, y = load_diabetes(return_X_y=True)
+reg = C5Regressor(min_samples_leaf=5)
+reg.fit(X, y)
 print(f"R^2 Score: {reg.score(X, y):.4f}")
 ```
 
-## Advanced Features
+---
 
-### Categorical Features
-`c50py` handles categorical variables natively (without one-hot encoding). You can specify them by index or name.
+## Key Features Deep Dive
+
+### 1. Native Categorical Support & Automatic Merging
+
+Standard decision trees (CART) require categorical variables to be One-Hot Encoded. This explodes the feature space and results in deep, hard-to-read trees ("staircase" splits).
+
+**`c50py` handles categories natively.** It finds the optimal split by grouping categories into two subsets.
+
+**Example:**
+Imagine a `City` feature with values `{NY, LA, CHI, HOU}`.
+*   **CART (One-Hot)**: `if City_NY == 1` then ... else `if City_LA == 1` ...
+*   **C5.0**: `if City in {NY, CHI}` then Left else Right.
 
 ```python
-# By name (requires feature_names in fit or init)
-clf = C5Classifier(categorical_features=["Color", "Size"])
-
-# By index
-clf = C5Classifier(categorical_features=[0, 3])
+# Specify categorical features by index or name
+clf = C5Classifier(categorical_features=["City", "State"])
+# OR let c50py infer them (object/category/bool columns)
+clf = C5Classifier(infer_categorical=True)
 ```
 
-### Missing Values
-`c50py` implements C5.0's "fractional propagation" strategy. If a value is missing during prediction, the instance is split down *all* branches, weighted by the probability of each branch (observed during training).
+### 2. Missing Value Handling
+
+`c50py` does not require you to fill `NaN` values. It uses **fractional case propagation**:
+*   **Training**: If a value is missing at a split, the instance is sent down **both** branches with a weight proportional to the probability of that branch.
+*   **Prediction**: The prediction is a weighted average of the results from both branches.
 
 ```python
 import numpy as np
-# Predict on an instance with a missing value (NaN)
-X_test = [[1, np.nan, 3]] 
-prediction = clf.predict(X_test)
+X = [[1, 2], [np.nan, 5], [3, 6]]
+y = [0, 1, 0]
+clf = C5Classifier()
+clf.fit(X, y) # Works natively!
 ```
 
-### Sample Weights
-You can assign different weights to samples during training. This affects split selection and pruning.
+### 3. Rule Extraction & Tracing
+
+You can extract human-readable rules from the tree or trace why a specific prediction was made.
 
 ```python
-weights = np.ones(len(y))
-weights[y == 1] = 5.0 # Give more weight to the positive class
-clf.fit(X, y, sample_weight=weights)
-```
-
-### Boosting
-Enable boosting by setting `trials > 1`. This uses a C5.0-style boosting (similar to AdaBoost.M1) but with reweighting.
-
-```python
-# Train an ensemble of 10 trees
-boosted_clf = C5Classifier(trials=10)
-boosted_clf.fit(X, y)
-```
-
-### Rule Extraction
-For single trees (`trials=1`), you can extract the rules as human-readable strings.
-
-```python
-rules = clf.export_rules()
-for r in rules[:3]:
+# Get all rules
+rules = clf.export_rules(feature_names=["Age", "Income"])
+for r in rules:
     print(r)
-# Output example:
-# if Sex in {female} and Pclass <= 2: class 1
+
+# Trace a specific prediction
+trace = clf.predict_rule([X_test[0]], feature_names=["Age", "Income"])
+print(trace[0])
 ```
 
-### Visualization
-You can export the tree to Graphviz format.
+### 4. Boosting
+
+Enable boosting by setting `trials > 1`. This creates an ensemble of trees, where each subsequent tree focuses on the errors of the previous ones.
 
 ```python
-# Export to .dot file
-clf.export_graphviz("tree", format="dot")
-
-# If Graphviz is installed on your system, you can render directly:
-# clf.export_graphviz("tree", format="png")
+# Train a boosted ensemble of 10 trees
+clf_boost = C5Classifier(trials=10)
+clf_boost.fit(X_train, y_train)
 ```
+
+---
+
+## Performance Comparison
+
+In benchmarks against scikit-learn's `DecisionTreeClassifier`, `c50py` often produces:
+*   **Simpler Trees**: Significantly fewer nodes for the same accuracy, especially with categorical data.
+*   **Comparable Accuracy**: Single trees are competitive; boosted trees often outperform single CART trees.
+*   **Better Interpretability**: Due to subset splits and rule extraction.
+
+See the [Comprehensive Tutorial Notebook](examples/c50py_comprehensive_tutorial.ipynb) for a detailed benchmark on the Titanic dataset.

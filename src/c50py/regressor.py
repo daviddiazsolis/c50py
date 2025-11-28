@@ -105,7 +105,9 @@ class RegrNode:
 
 # ----------------------------- Regressor -----------------------------
 
-class C5Regressor:
+from sklearn.base import BaseEstimator, RegressorMixin
+
+class C5Regressor(BaseEstimator, RegressorMixin):
     r"""
     C5Regressor(min_samples_split=2, min_samples_leaf=2, pruning=True,
                 cf=0.25, global_pruning=True, categorical_features=None,
