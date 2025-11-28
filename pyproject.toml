@@ -27,8 +27,8 @@ classifiers = [
 graphviz = ["graphviz>=0.20"]
 
 [project.urls]
-Homepage = "https://github.com/daviddiazsolis/c5py"
-Issues = "https://github.com/daviddiazsolis/c5py/issues"
+Homepage = "https://github.com/daviddiazsolis/c50py"
+Issues = "https://github.com/daviddiazsolis/c50py/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
