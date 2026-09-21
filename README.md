@@ -7,6 +7,16 @@ from scratch in pure Python/Numpy and includes support for numeric and
 categorical variables, missing values, pre‑ and post‑pruning, boosting,
 rule tracing/export and Graphviz visualisation.
 
+## What's new in 0.3.0
+
+Version 0.3.0 brings the classifier much closer to Quinlan's C4.5/C5.0 and makes it faster:
+
+- **Pessimistic pruning as in C4.5.** Leaves are penalised with the binomial upper limit (`AddErrs` from `prune.c`) and the original confidence-factor table (cf = 0.25 gives a deviate of about 0.69). Pure leaves now receive a positive penalty, so tiny leaves that only memorised the data are pruned. The previous normal approximation gave pure leaves zero penalty, so trees with pure leaves were never pruned, and the old "global" pass could collapse a useful tree into a single leaf on imbalanced data. `global_pruning` is now off by default.
+- **Split selection as in C4.5.** Gain ratio competes only among features whose gain is at least the average gain (`gain_ratio_avg_gain=True`); unknown cases count as an extra branch in the split information; and continuous attributes pay the MDL penalty of C4.5 Release 8 (`mdl_penalty=True`).
+- **Exhaustive, vectorised numeric thresholds.** `numeric_threshold_strategy="all"` is now the default and is evaluated with cumulative sums, so it is faster than the old 32-quantile subsample.
+- **pandas DataFrames are accepted directly**, column names become feature names, and `infer_categorical=True` is honoured by the classifier (object, category, bool and string columns). `print_tree`, `export_rules`, `predict_rule` and `export_graphviz` default to the names seen in `fit`.
+- **Boosting.** A perfect first tree no longer gets an arbitrary weight of 10; it gets a finite AdaBoost weight and boosting stops, as in C5.0. Combined with the new pruning, `trials > 1` now works from `min_samples_leaf=1`.
+
 ## Features
 
 - **Scikit-learn API:** `fit(X, y)`, `predict(X)`, `score(X, y)`.

@@ -9,6 +9,15 @@ values, pre‑pruning via ``min_samples_split``/``min_samples_leaf``, post‑pru
 via a confidence factor, optional global pruning, AdaBoost‑style boosting
 (the ``trials`` argument) and a scikit‑learn–like API.
 
+Version 0.3.0 brought the implementation closer to Quinlan's C4.5/C5.0:
+pessimistic pruning uses the binomial upper limit (``AddErrs`` from
+``prune.c``) with the original confidence-factor table, so pure leaves are
+penalised and tiny leaves get pruned; split selection applies the gain-ratio
+rule only among features with at least average gain, includes unknown cases in
+the split information and charges the MDL penalty to continuous attributes;
+numeric thresholds are evaluated exhaustively and vectorised; and pandas
+DataFrames are accepted directly, with ``infer_categorical`` honoured.
+
 In addition to the core training and prediction routines, the classifier
 provides utilities for rule tracing, rule export, pretty printing of the tree
 and Graphviz export.  These helpers operate only when the classifier is a
@@ -59,33 +68,59 @@ def _gain_ratio(parent: np.ndarray, children: list[np.ndarray]) -> float:
     s = _split_info(children)
     return float(g / s) if s > 0 else 0.0
 
+def _coeff_from_cf(cf: float) -> float:
+    """
+    Normal-deviate coefficient for a confidence factor, as in C4.5 (prune.c).
+
+    C4.5 tabulates the one-sided normal deviate for a handful of confidence
+    levels and interpolates between them.  ``cf`` is the probability that the
+    true error rate exceeds the pessimistic estimate: cf = 0.25 (the default)
+    gives a deviate of about 0.69, cf = 0.10 about 1.28, cf = 0.01 about 2.33.
+    Smaller ``cf`` means a larger deviate and therefore more pruning.
+    """
+    cf = float(cf)
+    Val = [0.0, 0.001, 0.005, 0.01, 0.05, 0.10, 0.20, 0.40, 1.00]
+    Dev = [4.0, 3.09, 2.58, 2.33, 1.65, 1.28, 0.84, 0.25, 0.00]
+    if cf <= 0.0:
+        return Dev[0]
+    if cf >= 1.0:
+        return 0.0
+    i = 0
+    while cf > Val[i]:
+        i += 1
+    return Dev[i - 1] + (Dev[i] - Dev[i - 1]) * (cf - Val[i - 1]) / (Val[i] - Val[i - 1])
+
+
 def _z_from_cf(cf: float) -> float:
+    """Backward-compatible alias of :func:`_coeff_from_cf`."""
+    return _coeff_from_cf(cf)
+
+
+def _add_errs(N: float, E: float, cf: float) -> float:
     """
-    Approximate a one‑sided z‑score from a confidence factor.
+    Extra errors to add to a leaf with ``N`` cases and ``E`` errors, following
+    C4.5's ``AddErrs`` (the upper limit of the binomial confidence interval).
 
-    The post‑pruning procedure uses a ``confidence factor`` to inflate error
-    rates on leaves when deciding whether to prune.  A smaller value implies
-    less pruning.  For a handful of commonly used confidence factors the
-    z‑score is tabulated explicitly; for others a simple linear approximation
-    is used.
-
-    Parameters
-    ----------
-    cf : float
-        Confidence factor in (0, 1).  Values near zero correspond to roughly
-        two‑sigma pessimistic errors (z≈1.96); values near one imply very
-        heavy pruning.
-
-    Returns
-    -------
-    float
-        An approximate z‑score corresponding to the given confidence factor.
+    Unlike a plain normal approximation, a pure leaf (``E = 0``) still receives
+    a positive penalty, ``N * (1 - cf ** (1 / N))``, which is what allows the
+    algorithm to prune away tiny leaves that merely memorised the data.
     """
-    table = {0.25: 1.150, 0.20: 1.282, 0.10: 1.645, 0.05: 1.960, 0.01: 2.576}
-    if cf in table:
-        return table[cf]
-    # simple linear approximation between known points
-    return max(0.5, 1.150 + (0.25 - cf) * 3.2)
+    N = float(N); E = float(E); cf = float(cf)
+    if N <= 0:
+        return 0.0
+    coeff = _coeff_from_cf(cf)
+    if E < 1e-6:
+        return N * (1.0 - np.exp(np.log(cf) / N)) if cf > 0 else N
+    if E < 1.0:
+        val0 = N * (1.0 - np.exp(np.log(cf) / N)) if cf > 0 else N
+        return val0 + E * (_add_errs(N, 1.0, cf) - val0)
+    if E + 0.5 >= N:
+        return 0.67 * (N - E)
+    pr = (E + 0.5) / N
+    val = pr + coeff * coeff / (2 * N) + coeff * np.sqrt(pr / N - pr * pr / N + coeff * coeff / (4 * N * N))
+    val /= (1.0 + coeff * coeff / N)
+    return val * N - E
+
 
 # -----------------------------------------------------------------------------
 # Node
@@ -222,7 +257,8 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
       (``trials=1``).  Calling them on an ensemble raises a ``ValueError``.
     """
     def _maybe_feature_names(self, feature_names=None):
-        return feature_names
+        # default to the names seen in fit (or given in the constructor / a DataFrame)
+        return feature_names if feature_names is not None else getattr(self, "feature_names_", None)
 
 
     def __init__(
@@ -233,19 +269,23 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
         min_samples_leaf: int = 1,
         pruning: bool = True,
         cf: float = 0.25,
-        global_pruning: bool = True,
+        global_pruning: bool = False,
         random_state: int | None = None,
         feature_names: list[str] | None = None,
         categorical_features: list[int | str] | None = None,
         infer_categorical: bool = False,
         int_as_categorical: bool = False,
         max_categories_exhaustive: int = 12,
-        numeric_threshold_strategy: str = "quantile",
+        numeric_threshold_strategy: str = "all",
         max_numeric_thresholds: int = 32,
         max_depth: int | None = None,
+        mdl_penalty: bool = True,
+        gain_ratio_avg_gain: bool = True,
         verbose: int = 0,
     ):
         """Clean C5.0-style classifier (Quinlan-inspired)."""
+        self.mdl_penalty = bool(mdl_penalty)
+        self.gain_ratio_avg_gain = bool(gain_ratio_avg_gain)
         self.trials = int(trials)
         self.min_samples_split = int(min_samples_split)
         self.min_samples_leaf = int(min_samples_leaf)
@@ -270,7 +310,17 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
         self.n_features_ = None
 
     def fit(self, X, y, sample_weight=None, feature_names=None):
+        # pandas support: column names become feature names, object/category/bool
+        # columns are treated as categorical when infer_categorical=True
+        df_dtypes = None
+        if hasattr(X, "columns") and hasattr(X, "dtypes"):
+            if feature_names is None and getattr(self, "feature_names_", None) is None:
+                feature_names = [str(c) for c in X.columns]
+            df_dtypes = list(X.dtypes)
+            X = X.to_numpy(dtype=object) if any(str(d) in ("object", "category", "bool", "string") for d in df_dtypes) else X.to_numpy()
         X = np.asarray(X)
+        if hasattr(y, "to_numpy"):
+            y = y.to_numpy()
         y = np.asarray(y)
         if sample_weight is None:
             w = np.ones(len(y), dtype=float)
@@ -308,6 +358,20 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
                 name_to_idx = {n:i for i,n in enumerate(self.feature_names_)}
                 cf = [name_to_idx[c] for c in cf]
             cats = set(int(i) for i in cf)
+        if self.infer_categorical:
+            for j in range(n_features):
+                if j in cats:
+                    continue
+                col = X[:, j]
+                if df_dtypes is not None and str(df_dtypes[j]) in ("object", "category", "bool", "string"):
+                    cats.add(j); continue
+                if col.dtype == object:
+                    vals_known = [v for v in col if not _isnan_scalar(v)]
+                    if any(isinstance(v, (str, bool, np.bool_)) for v in vals_known):
+                        cats.add(j)
+                elif self.int_as_categorical and col.dtype.kind in "iu":
+                    cats.add(j)
+        self.categorical_features_ = sorted(cats)
         self.is_cat_ = [ (i in cats) for i in range(n_features) ]
         
         self.classes_ = np.unique(y)
@@ -467,7 +531,7 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
         if getattr(self, 'tree_', None) is None:
             raise ValueError("Estimator not fitted. Call fit(...) first.")
         rules: list[str] = []
-        self._collect_rules(self.tree_, [], rules, feature_names, class_names)
+        self._collect_rules(self.tree_, [], rules, self._maybe_feature_names(feature_names), class_names)
         return rules
 
     def export_graphviz(self, filename: str | None = None, *, feature_names=None,
@@ -524,7 +588,7 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
         except ImportError:
             raise RuntimeError("Graphviz is required for export_graphviz but not installed.")
         dot = graphviz.Digraph(format=format)
-        self._add_graph_nodes(dot, self.tree_, "0", feature_names, class_names)
+        self._add_graph_nodes(dot, self.tree_, "0", self._maybe_feature_names(feature_names), class_names)
         
         if filename is None:
             return dot.source
@@ -605,9 +669,11 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
             err = np.sum(curr_w * incorrect) / np.sum(curr_w)
             
             if err <= eps:
-                # Perfect classifier, stop
+                # A perfect tree on the training data: nothing left to correct.
+                # C5.0 stops boosting here; the tree gets a finite weight so that
+                # predict_proba stays well defined.
                 self.ensemble_.append(tree)
-                self.alphas_.append(10.0) # Arbitrary large alpha? Or just 1?
+                self.alphas_.append(0.5 * np.log((1 - eps) / eps))
                 break
             
             if err >= 0.5:
@@ -845,132 +911,136 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
 
 
     def _best_split(self, X, y, w):
-        """Compute best split by Gain Ratio (fast) with weights."""
-        import numpy as np
+        """
+        Choose the split with the best gain ratio, following C4.5.
+
+        For every feature the best candidate split is found (all numeric
+        thresholds, or all binary subsets of categories).  Information gain is
+        computed on the cases where the feature is known and scaled by the
+        fraction of known cases; the split information includes the unknown
+        cases as an extra branch.  Continuous features pay the MDL penalty of
+        C4.5 Release 8 (``log2(number of thresholds) / n_known``).  Finally,
+        as in C4.5, only splits whose gain is at least the average gain of all
+        candidate features compete by gain ratio, which protects against
+        splits that have a tiny gain and an even tinier split information.
+        """
         classes = self.classes_
-        parent = self._class_distribution_vector(y, w)
-        best_gain, best_feat, best_thr, best_type = -1.0, None, None, None
-        best_pl, best_pr = 0.5, 0.5
-        
-        n_features = X.shape[1]
-        cats = set(getattr(self, "categorical_features_", getattr(self, "categorical_features", []) or []))
-        
-        # Total weight
+        idx_map = {c: i for i, c in enumerate(classes)}; K = len(classes)
+        y_idx_all = np.fromiter((idx_map[c] for c in y), count=y.shape[0], dtype=int)
         total_w = w.sum()
         if total_w <= 0:
             return None, None, None, None, None
-            
+        n_features = X.shape[1]
+        cats = set(getattr(self, "categorical_features_", []) or [])
+        msl = float(self.min_samples_leaf)
+
+        def entropy_rows(M):
+            # M: (m, K) weighted class counts per row -> entropy per row
+            tot = M.sum(axis=1, keepdims=True)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                p = np.where(tot > 0, M / np.where(tot > 0, tot, 1.0), 0.0)
+                lp = np.where(p > 0, np.log2(np.where(p > 0, p, 1.0)), 0.0)
+            return -(p * lp).sum(axis=1)
+
+        candidates = []   # (gain, gain_ratio, feat, thr, stype, pl, pr)
         for j in range(n_features):
             col = X[:, j]
             is_cat = j in cats
             if col.dtype.kind == "f":
-                known = ~np.isnan(col); v_known = col[known]; y_known = y[known]; w_known = w[known]
+                known = ~np.isnan(col)
             else:
-                known = col != None; v_known = col[known]; y_known = y[known]; w_known = w[known]
-            
+                known = np.fromiter((not _isnan_scalar(v) for v in col), count=col.shape[0], dtype=bool)
+            v_known = col[known]; yk = y_idx_all[known]; wk = w[known]
             if v_known.size == 0:
                 continue
-            
-            # Fraction of known values
-            w_known_sum = w_known.sum()
+            w_known_sum = wk.sum()
+            if w_known_sum <= 0:
+                continue
             frac_known = w_known_sum / total_w
-            
-            if is_cat:
-                # Weighted categorical split
-                vals, inverse = np.unique(v_known, return_inverse=True)
-                val_dists = {}
-                for idx, v in enumerate(vals):
-                    mask = (inverse == idx)
-                    val_dists[v] = self._class_distribution_vector(y_known[mask], w_known[mask])
-                
-                val_weights = {v: d.sum() for v, d in val_dists.items()}
-                sorted_vals = sorted(val_dists.keys(), key=lambda x: val_weights[x], reverse=True)
-                candidates = sorted_vals[:int(getattr(self, "max_categories_exhaustive", 12))]
-                
-                # Exhaustive subset search
-                import itertools
-                n_cats = len(candidates)
-                
-                # If too many categories, fallback to one-vs-rest or heuristic?
-                # For now, we respect max_categories_exhaustive.
-                # We iterate combinations of size 1 to n_cats // 2
-                
-                parent_known = self._class_distribution_vector(y_known, w_known)
-                
-                # Optimization: pre-calculate dists for candidates
-                cand_dists = [val_dists[v] for v in candidates]
-                
-                for r in range(1, (n_cats // 2) + 1):
-                    for subset_indices in itertools.combinations(range(n_cats), r):
-                        # Construct left node distribution
-                        left = np.zeros_like(parent_known)
-                        subset_vals = []
-                        for idx in subset_indices:
-                            left += cand_dists[idx]
-                            subset_vals.append(candidates[idx])
-                        
-                        right = parent_known - left
-                        
-                        # Check min_samples_leaf
-                        if left.sum() < self.min_samples_leaf or right.sum() < self.min_samples_leaf:
-                            continue
+            frac_miss = 1.0 - frac_known
+            si_miss = 0.0 if frac_miss <= 0 else -frac_miss * np.log2(frac_miss)
+            parent_known = np.zeros(K); np.add.at(parent_known, yk, wk)
+            H_parent = entropy_rows(parent_known[None, :])[0]
 
-                        # Gain ratio on known values
-                        gr = _gain_ratio(parent_known, [left, right])
-                        
-                        # Penalize by fraction of known values (C5.0 logic)
-                        gr *= frac_known
-                        
-                        if gr > best_gain:
-                            swL = left.sum()
-                            swR = right.sum()
-                            pl = swL / (swL + swR) if (swL + swR) > 0 else 0.5
-                            best_gain, best_feat, best_thr, best_type = float(gr), j, frozenset(subset_vals), "categorical"
-                            best_pl, best_pr = pl, 1.0 - pl
+            if is_cat:
+                vals, inverse = np.unique(v_known, return_inverse=True)
+                if vals.size < 2:
+                    continue
+                dists = np.zeros((vals.size, K)); np.add.at(dists, (inverse, yk), wk)
+                val_w = dists.sum(axis=1)
+                order = np.argsort(-val_w, kind="mergesort")
+                n_cats = min(int(self.max_categories_exhaustive), vals.size)
+                cand_idx = order[:n_cats]
+                best_local = None
+                # enumerate subsets of the candidate categories (one side), complement = rest incl. rare values
+                for r in range(1, n_cats // 2 + 1):
+                    for sub in combinations(range(n_cats), r):
+                        if r * 2 == n_cats and 0 not in sub:
+                            continue   # avoid evaluating each even partition twice
+                        left = dists[cand_idx[list(sub)]].sum(axis=0)
+                        right = parent_known - left
+                        swL, swR = left.sum(), right.sum()
+                        if swL < msl or swR < msl:
+                            continue
+                        H_children = (swL * entropy_rows(left[None, :])[0] + swR * entropy_rows(right[None, :])[0]) / w_known_sum
+                        gain = (H_parent - H_children) * frac_known
+                        pL, pR = frac_known * swL / w_known_sum, frac_known * swR / w_known_sum
+                        si = -(pL * np.log2(pL) + pR * np.log2(pR)) + si_miss
+                        gr = gain / si if si > 0 else 0.0
+                        if best_local is None or gr > best_local[1]:
+                            best_local = (gain, gr, j, frozenset(vals[cand_idx[list(sub)]].tolist()), "categorical", swL / (swL + swR), swR / (swL + swR))
+                if best_local is not None:
+                    candidates.append(best_local)
             else:
-                # Weighted numeric split
                 vv = v_known.astype(float, copy=False)
                 if vv.size <= 1:
                     continue
                 order = np.argsort(vv, kind="mergesort")
-                v = vv[order]; yk = y_known[order]; wk = w_known[order]
-                
+                v = vv[order]; yo = yk[order]; wo = wk[order]
                 bd = np.nonzero(v[:-1] != v[1:])[0]
                 if bd.size == 0:
                     continue
-                if getattr(self, "numeric_threshold_strategy", "quantile") == "quantile":
+                n_thr = bd.size
+                if getattr(self, "numeric_threshold_strategy", "all") == "quantile":
                     k = int(getattr(self, "max_numeric_thresholds", 32))
                     if bd.size > k:
-                        idxs = np.linspace(0, bd.size-1, num=k, dtype=int); bd = bd[idxs]
-                
-                idx_map = {c:i for i,c in enumerate(classes)}; K = len(classes)
-                y_idx = np.fromiter((idx_map[c] for c in yk), count=yk.shape[0], dtype=int)
-                
-                M = np.zeros((y_idx.shape[0], K), dtype=float)
-                M[np.arange(y_idx.shape[0]), y_idx] = wk
-                
-                SW = M.cumsum(axis=0); total = SW[-1] # This is parent_known
-                
-                # Parent entropy for gain ratio
-                parent_known = total
-                
-                for i in bd:
-                    left = SW[i]; right = total - left
-                    gr = _gain_ratio(parent_known, [left, right])
-                    gr *= frac_known
-                    
-                    if left.sum() < self.min_samples_leaf or right.sum() < self.min_samples_leaf:
-                        continue
-                    
-                    if gr > best_gain:
-                        thr = 0.5 * (v[i] + v[i+1])
-                        swL = left.sum()
-                        swR = right.sum()
-                        pl = swL / (swL + swR) if (swL + swR) > 0 else 0.5
-                        best_gain, best_feat, best_thr, best_type = float(gr), j, float(thr), "numeric"
-                        best_pl, best_pr = pl, 1.0 - pl
-                        
-        return best_feat, best_thr, best_type, best_pl, best_pr
+                        bd = bd[np.linspace(0, bd.size - 1, num=k, dtype=int)]
+                M = np.zeros((v.size, K)); M[np.arange(v.size), yo] = wo
+                SW = M.cumsum(axis=0)
+                left = SW[bd]; right = parent_known[None, :] - left
+                swL = left.sum(axis=1); swR = right.sum(axis=1)
+                ok = (swL >= msl) & (swR >= msl)
+                if not ok.any():
+                    continue
+                H_children = (swL * entropy_rows(left) + swR * entropy_rows(right)) / w_known_sum
+                gain = (H_parent - H_children) * frac_known
+                if self.mdl_penalty and n_thr > 1:
+                    gain = gain - np.log2(n_thr) / w_known_sum
+                pL = frac_known * swL / w_known_sum; pR = frac_known * swR / w_known_sum
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    si = -(pL * np.log2(np.where(pL > 0, pL, 1)) + pR * np.log2(np.where(pR > 0, pR, 1))) + si_miss
+                gr = np.where(si > 0, gain / np.where(si > 0, si, 1), 0.0)
+                gr = np.where(ok, gr, -np.inf)
+                i_best = int(np.argmax(gr))
+                if not np.isfinite(gr[i_best]):
+                    continue
+                i = bd[i_best]
+                thr = 0.5 * (v[i] + v[i + 1])
+                candidates.append((float(gain[i_best]), float(gr[i_best]), j, float(thr), "numeric", float(swL[i_best] / (swL[i_best] + swR[i_best])), float(swR[i_best] / (swL[i_best] + swR[i_best]))))
+
+        if not candidates:
+            return None, None, None, None, None
+        gains = np.array([c[0] for c in candidates])
+        if self.gain_ratio_avg_gain:
+            avg_gain = gains.mean()
+            eligible = [c for c in candidates if c[0] >= avg_gain - 1e-12]
+        else:
+            eligible = candidates
+        eligible = [c for c in eligible if c[0] > 1e-12]
+        if not eligible:
+            return None, None, None, None, None
+        best = max(eligible, key=lambda c: c[1])
+        return best[2], best[3], best[4], best[5], best[6]
 
     def _node_error_rate(self, node: TreeNode) -> tuple[float, float]:
         dist = node.class_distribution
@@ -981,56 +1051,68 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
         return err_leaf, N
 
     def _pessimistic(self, err_rate: float, N: float) -> float:
+        """Pessimistic error *rate* of a leaf (kept for backward compatibility)."""
         if N <= 0:
             return 1.0
-        z = _z_from_cf(self.cf)
-        se = np.sqrt(err_rate * max(1.0 - err_rate, 0.0) / max(N, 1.0))
-        return min(1.0, err_rate + z * se)
+        E = err_rate * N
+        return min(1.0, (E + _add_errs(N, E, self.cf)) / N)
+
+    def _leaf_errors(self, node: TreeNode) -> tuple[float, float]:
+        """(errors, N) of a node treated as a leaf, using its class distribution."""
+        dist = node.class_distribution
+        N = float(sum(dist.values()))
+        if N <= 0:
+            return 0.0, 0.0
+        return N - max(dist.values()), N
 
     def _prune_local(self, node: TreeNode) -> tuple[float, float]:
+        """
+        Bottom-up pessimistic pruning as in C4.5 (``prune.c``).
+
+        Returns the pessimistic number of errors of the (possibly pruned)
+        subtree and the number of cases it covers.  Every leaf contributes
+        ``E + AddErrs(N, E)``; an internal node is replaced by a leaf when the
+        pessimistic errors of the leaf do not exceed those of its subtree
+        (plus a tolerance of 0.1 error, as in the original).
+        """
+        E, N = self._leaf_errors(node)
         if node.is_leaf:
-            err_leaf, N = self._node_error_rate(node)
-            return self._pessimistic(err_leaf, N), N
-
-        total_N = 0.0
-        pess_sum = 0.0
+            return E + _add_errs(N, E, self.cf), N
+        sub_err = 0.0
         for ch in node.children.values():
-            pess, n_ch = self._prune_local(ch)
-            pess_sum += pess * n_ch
-            total_N += n_ch
-        pess_subtree = pess_sum / max(total_N, 1.0)
-
-        err_leaf, N_here = self._node_error_rate(node)
-        pess_leaf = self._pessimistic(err_leaf, N_here)
-
-        if pess_leaf <= pess_subtree:
+            e_ch, _ = self._prune_local(ch)
+            sub_err += e_ch
+        leaf_err = E + _add_errs(N, E, self.cf)
+        if leaf_err <= sub_err + 0.1:
             node.is_leaf = True
             node.children = {}
-            return pess_leaf, N_here
-        return pess_subtree, total_N
+            return leaf_err, N
+        return sub_err, N
 
     def _prune_global(self, node: TreeNode):
+        """
+        Second, top-down pass: after local pruning, check again whether any
+        internal node would be better as a leaf against its *whole* pruned
+        subtree.  With C4.5's AddErrs this rarely changes anything; it is kept
+        as an option (``global_pruning=True``) and is off by default.
+        """
         if node.is_leaf:
             return
-        # Estimate pessimistic error of the subtree (average of children)
-        child_pess_sum, child_N = 0.0, 0.0
-        for ch in node.children.values():
-            err_leaf_ch, N_ch = self._node_error_rate(ch)
-            pess_ch = self._pessimistic(err_leaf_ch, N_ch)
-            child_pess_sum += pess_ch * max(N_ch, 1.0)
-            child_N += max(N_ch, 1.0)
-        pess_sub = child_pess_sum / max(child_N, 1.0)
-
-        err_leaf, N_here = self._node_error_rate(node)
-        pess_leaf = self._pessimistic(err_leaf, N_here)
-
-        if pess_leaf <= pess_sub:
+        E, N = self._leaf_errors(node)
+        leaf_err = E + _add_errs(N, E, self.cf)
+        sub_err = self._subtree_errors(node)
+        if leaf_err <= sub_err + 0.1:
             node.is_leaf = True
             node.children = {}
             return
-
         for ch in list(node.children.values()):
             self._prune_global(ch)
+
+    def _subtree_errors(self, node: TreeNode) -> float:
+        if node.is_leaf:
+            E, N = self._leaf_errors(node)
+            return E + _add_errs(N, E, self.cf)
+        return sum(self._subtree_errors(ch) for ch in node.children.values())
 
     # ------------------------------------------------------------------
     # Rule tracing / Graphviz / printing helpers

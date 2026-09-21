@@ -17,6 +17,8 @@ While scikit-learn's CART implementation is excellent, C5.0 offers distinct adva
 
 ## Installation
 
+Requires Python 3.9+, NumPy and scikit-learn. pandas is optional (DataFrames are accepted directly).
+
 ```bash
 pip install c50py
 ```
@@ -98,7 +100,17 @@ trace = clf.predict_rule([X_test[0]], feature_names=["Age", "Income"])
 print(trace[0])
 ```
 
-### 4. Boosting
+### 4. Pruning: what `cf` and `min_samples_leaf` do
+
+`c50py` prunes like C4.5: every leaf with `N` cases and `E` errors is charged the upper limit of the
+binomial confidence interval (`AddErrs`), a subtree is replaced by a leaf when the leaf's pessimistic
+errors do not exceed the subtree's, and the process runs bottom-up. `cf` is the confidence level:
+0.25 (default) prunes moderately, 0.10 or 0.01 prune more. Because pruning is error based, on very
+imbalanced targets it can remove leaves that only refined probabilities without changing the
+predicted class; if you care about ranking (AUC) rather than accuracy, use `pruning=False` with a
+sensible `min_samples_leaf`, or a smaller `cf`.
+
+### 5. Boosting
 
 Enable boosting by setting `trials > 1`. This creates an ensemble of trees, where each subsequent tree focuses on the errors of the previous ones.
 

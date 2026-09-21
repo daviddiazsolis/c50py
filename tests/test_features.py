@@ -54,7 +54,9 @@ def test_boosting_weights():
     
     # Stump 1: x <= 1.5 -> 0, x > 1.5 -> 1 (error on 3)
     # Stump 2: Focus on 3 (x=3, y=0). Split x > 2.5?
-    clf = C5Classifier(trials=10, max_depth=1, random_state=42)
+    # Con 4 casos, la poda pesimista de C4.5 y la penalizacion MDL dejan el arbol en una hoja;
+    # para probar el mecanismo de boosting se desactivan (son datos de juguete).
+    clf = C5Classifier(trials=10, max_depth=1, random_state=42, pruning=False, mdl_penalty=False)
     clf.fit(X, y)
     
     assert clf.score(X, y) == 1.0
