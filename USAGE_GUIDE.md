@@ -146,6 +146,11 @@ Parameters: `max_depth`, `feature_names`, `class_names` (list or `True`), `label
 `out_file`, `leaves_parallel`, `rotate`, `special_characters`, `fontname`. The extra `tree_index`
 selects a tree of a boosted model: `clf_boost.plot_tree(tree_index=3)`.
 
+Colours: c50py fills the boxes by default (`filled=True`) with its own palette, teal, violet, gold,
+rose, sky and lime, so C5.0 trees stand out next to scikit-learn's orange/blue CART trees. Use
+`palette="sklearn"` for scikit-learn's exact colours, a list such as `palette=["#1b9e77", "#d95f02"]`
+for your own (one per class, in the order of `classes_`), or `filled=False` for white boxes.
+
 Feature names default to the ones seen in `fit` (a DataFrame's columns or the `feature_names`
 argument); with no names, boxes read `x[0], x[1], ...` as in scikit-learn.
 

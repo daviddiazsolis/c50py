@@ -245,7 +245,58 @@ def _color_brew(n):
     return color_list
 
 
+# c50py's own palette (a deliberate change from scikit-learn's orange/blue, so a
+# C5.0 tree is recognisable next to a CART tree).  Order chosen and checked for
+# colour-blind separation: the first three slots stay distinguishable for every
+# pair; slots 4-6 for neighbours.  Medium-light tones so black text stays legible
+# on fully saturated (pure) nodes.  Regression trees use slot 1 (teal) as a
+# light-to-dark ramp.
+C50PY_PALETTE = ["#26A69A",  # teal
+                 "#9575CD",  # violet
+                 "#EDA100",  # gold
+                 "#E87BA4",  # rose
+                 "#4FB3E8",  # sky
+                 "#8BC34A"]  # lime
+
+
+def _hex_to_rgb(h):
+    h = h.lstrip("#")
+    return [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+
+
+def _palette_rgb(palette, n):
+    """RGB triples for n classes. palette: "c50py", "sklearn" or a list of colours."""
+    if palette is None or (isinstance(palette, str) and palette.lower() == "sklearn"):
+        return _color_brew(n)
+    if isinstance(palette, str):
+        if palette.lower() != "c50py":
+            raise ValueError("palette must be 'c50py', 'sklearn' or a list of colours, got %r" % (palette,))
+        palette = C50PY_PALETTE
+    from matplotlib.colors import to_hex
+    base = [_hex_to_rgb(to_hex(c)) for c in palette]
+    if n <= len(base):
+        return base[:max(n, 1)]
+    # more classes than colours: evenly spaced hues, shifted away from scikit-learn's
+    extra = [[int(round(v)) for v in rgb] for rgb in _color_brew_shifted(n - len(base))]
+    return base + extra
+
+
+def _color_brew_shifted(n, start=200):
+    out = []
+    s, v = 0.6, 0.85
+    c = s * v
+    m = v - c
+    for h in (start + np.arange(n) * 360.0 / n) % 360:
+        h_bar = h / 60.0
+        x = c * (1 - abs((h_bar % 2) - 1))
+        r, g, b = [(c, x, 0), (x, c, 0), (0, c, x), (0, x, c), (x, 0, c), (c, 0, x), (c, x, 0)][int(h_bar)]
+        out.append([255 * (r + m), 255 * (g + m), 255 * (b + m)])
+    return out
+
+
 class _BaseTreeExporter:
+    palette = "sklearn"
+
     def __init__(self, max_depth=None, feature_names=None, class_names=None,
                  label="all", filled=False, impurity=True, node_ids=False,
                  proportion=False, rounded=False, precision=3, fontsize=None):
@@ -275,11 +326,11 @@ class _BaseTreeExporter:
                 self.colors["bounds"][1] - self.colors["bounds"][0]
             )
         color = [int(round(alpha * c + (1 - alpha) * 255, 0)) for c in color]
-        return "#%2x%2x%2x" % tuple(color)
+        return "#%02x%02x%02x" % tuple(color)
 
     def get_fill_color(self, tree, node_id):
         if "rgb" not in self.colors:
-            self.colors["rgb"] = _color_brew(tree.n_classes[0])
+            self.colors["rgb"] = _palette_rgb(self.palette, tree.n_classes[0])
             if tree.n_classes[0] == 1 and len(np.unique(tree.value)) != 1:
                 self.colors["bounds"] = (np.min(tree.value), np.max(tree.value))
         node_val = tree.value[node_id][0, :]
@@ -729,7 +780,7 @@ def plot_tree(
     feature_names=None,
     class_names=None,
     label="all",
-    filled=False,
+    filled=True,
     impurity=True,
     node_ids=False,
     proportion=False,
@@ -738,6 +789,7 @@ def plot_tree(
     ax=None,
     fontsize=None,
     tree_index=0,
+    palette="c50py",
 ):
     """Plot a c50py tree with matplotlib, exactly like :func:`sklearn.tree.plot_tree`.
 
@@ -760,9 +812,10 @@ def plot_tree(
         ``y[0], y[1], ...``. Ignored for regressors.
     label : {'all', 'root', 'none'}, default='all'
         Where to show the informative labels (``entropy = ``, ``samples = ``...).
-    filled : bool, default=False
+    filled : bool, default=True
         Paint nodes by majority class (classification) or by the size of the
-        prediction (regression), with scikit-learn's palette.
+        prediction (regression); the stronger the colour, the purer the node.
+        Unlike scikit-learn (``filled=False``), c50py colours by default.
     impurity : bool, default=True
         Show the impurity of each node (entropy for classifiers, squared error
         for regressors).
@@ -780,6 +833,12 @@ def plot_tree(
         Font size. If None, it is chosen to fit the figure.
     tree_index : int, default=0
         For boosted models, which of the trees to draw.
+    palette : "c50py", "sklearn" or list of colours, default="c50py"
+        Node colours. ``"c50py"`` is the package's own palette (teal, violet,
+        gold, rose, sky, lime), so C5.0 trees are recognisable next to
+        scikit-learn's orange/blue CART trees. ``"sklearn"`` reproduces
+        scikit-learn's colours exactly. A list (e.g. ``["#1f77b4", "tab:red"]``)
+        sets one colour per class, in the order of ``classes_``.
 
     Returns
     -------
@@ -794,6 +853,7 @@ def plot_tree(
         label=label, filled=filled, impurity=impurity, node_ids=node_ids,
         proportion=proportion, rounded=rounded, precision=precision, fontsize=fontsize,
     )
+    exporter.palette = palette
     return exporter.export(ft, _criterion(decision_tree), ax=ax)
 
 
@@ -805,7 +865,7 @@ def export_graphviz(
     feature_names=None,
     class_names=None,
     label="all",
-    filled=False,
+    filled=True,
     leaves_parallel=False,
     impurity=True,
     node_ids=False,
@@ -816,6 +876,7 @@ def export_graphviz(
     precision=3,
     fontname="helvetica",
     tree_index=0,
+    palette="c50py",
 ):
     """Export a c50py tree in DOT format, exactly like :func:`sklearn.tree.export_graphviz`.
 
@@ -847,6 +908,7 @@ def export_graphviz(
             proportion=proportion, rotate=rotate, rounded=rounded,
             special_characters=special_characters, precision=precision, fontname=fontname,
         )
+        exporter.palette = palette
         exporter.export(ft, _criterion(decision_tree))
         if return_string:
             return exporter.out_file.getvalue()
@@ -955,9 +1017,9 @@ class _TreeExportMixin:
     """
 
     def plot_tree(self, *, max_depth=None, feature_names=None, class_names=None,
-                  label="all", filled=False, impurity=True, node_ids=False,
+                  label="all", filled=True, impurity=True, node_ids=False,
                   proportion=False, rounded=False, precision=3, ax=None,
-                  fontsize=None, tree_index=0):
+                  fontsize=None, tree_index=0, palette="c50py"):
         """Draw the tree with matplotlib, like :func:`sklearn.tree.plot_tree`.
 
         See :func:`c50py.plot_tree` for the parameters.
@@ -966,7 +1028,7 @@ class _TreeExportMixin:
                          class_names=class_names, label=label, filled=filled,
                          impurity=impurity, node_ids=node_ids, proportion=proportion,
                          rounded=rounded, precision=precision, ax=ax, fontsize=fontsize,
-                         tree_index=tree_index)
+                         tree_index=tree_index, palette=palette)
 
     def export_text(self, *, feature_names=None, class_names=None, max_depth=10,
                     spacing=3, decimals=2, show_weights=False, tree_index=0):
@@ -976,10 +1038,10 @@ class _TreeExportMixin:
                            show_weights=show_weights, tree_index=tree_index)
 
     def export_graphviz(self, out_file=None, feature_names=None, *, class_names=None,
-                        max_depth=None, label="all", filled=False, leaves_parallel=False,
+                        max_depth=None, label="all", filled=True, leaves_parallel=False,
                         impurity=True, node_ids=False, proportion=False, rotate=False,
                         rounded=False, special_characters=False, precision=3,
-                        fontname="helvetica", tree_index=0, format=None, filename=None):
+                        fontname="helvetica", tree_index=0, palette="c50py", format=None, filename=None):
         """Export the tree in DOT format, like :func:`sklearn.tree.export_graphviz`.
 
         * ``out_file=None`` (default): returns the DOT source as a string.
@@ -998,7 +1060,8 @@ class _TreeExportMixin:
                   label=label, filled=filled, leaves_parallel=leaves_parallel,
                   impurity=impurity, node_ids=node_ids, proportion=proportion,
                   rotate=rotate, rounded=rounded, special_characters=special_characters,
-                  precision=precision, fontname=fontname, tree_index=tree_index)
+                  precision=precision, fontname=fontname, tree_index=tree_index,
+                  palette=palette)
         if format is None or not isinstance(out_file, str):
             return export_graphviz(self, out_file, **kw)
         # legacy behaviour: basename + format

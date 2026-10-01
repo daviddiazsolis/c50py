@@ -28,7 +28,10 @@ plot_tree(clf, class_names=["stays", "leaves"], filled=True, rounded=True)      
 All of scikit-learn's options work: `max_depth`, `feature_names`, `class_names`, `label`, `filled`,
 `impurity`, `node_ids`, `proportion`, `rounded`, `precision`, `ax`, `fontsize` (and, for
 `export_graphviz`, `out_file`, `leaves_parallel`, `rotate`, `special_characters`, `fontname`).
-The only extra one is `tree_index`, to draw any tree of a boosted model (`trials > 1`).
+Two extras: `tree_index`, to draw any tree of a boosted model (`trials > 1`), and `palette`. Unlike
+scikit-learn, c50py colours the boxes by default with its own palette (teal, violet, gold, ...), so a C5.0
+tree is easy to tell apart from a CART tree; `palette="sklearn"` gives scikit-learn's orange/blue exactly,
+and `filled=False` gives white boxes.
 
 What is specific to C5.0 inside the boxes: the impurity is the **entropy** (C5.0's criterion; regression
 trees show `squared_error` as in scikit-learn), categorical splits read `feature in {a, b}`, and

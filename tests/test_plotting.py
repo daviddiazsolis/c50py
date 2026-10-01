@@ -71,12 +71,12 @@ def test_classifier_drawing_identical_to_sklearn(opts):
     X, y = load_iris(return_X_y=True)
     sk = sk_tree.DecisionTreeClassifier(criterion="entropy", max_depth=3, random_state=0).fit(X, y)
     c5 = _mirror_classifier(sk, X.shape[1])
-    kw = dict(opts, feature_names=["sl", "sw", "pl", "pw"], class_names=["a", "b", "c"])
+    kw = dict({"filled": False}, **opts, feature_names=["sl", "sw", "pl", "pw"], class_names=["a", "b", "c"])
     _, ax1 = plt.subplots(figsize=(12, 6))
     _, ax2 = plt.subplots(figsize=(12, 6))
-    assert _signature(sk_tree.plot_tree(sk, ax=ax1, **kw)) == _signature(plot_tree(c5, ax=ax2, **kw))
+    assert _signature(sk_tree.plot_tree(sk, ax=ax1, **kw)) == _signature(plot_tree(c5, ax=ax2, palette="sklearn", **kw))
     plt.close("all")
-    assert sk_tree.export_graphviz(sk, **kw) == export_graphviz(c5, **kw)
+    assert sk_tree.export_graphviz(sk, **kw) == export_graphviz(c5, palette="sklearn", **kw)
     assert sk_tree.export_text(sk, feature_names=kw["feature_names"]) == export_text(c5, feature_names=kw["feature_names"])
 
 
@@ -86,11 +86,12 @@ def test_regressor_drawing_identical_to_sklearn(opts):
     X, y = load_diabetes(return_X_y=True)
     sk = sk_tree.DecisionTreeRegressor(max_depth=3, random_state=0).fit(X, y)
     c5 = _mirror_regressor(sk, X.shape[1])
+    opts = dict({"filled": False}, **opts)
     _, ax1 = plt.subplots(figsize=(12, 6))
     _, ax2 = plt.subplots(figsize=(12, 6))
-    assert _signature(sk_tree.plot_tree(sk, ax=ax1, **opts)) == _signature(c5.plot_tree(ax=ax2, **opts))
+    assert _signature(sk_tree.plot_tree(sk, ax=ax1, **opts)) == _signature(c5.plot_tree(ax=ax2, palette="sklearn", **opts))
     plt.close("all")
-    assert sk_tree.export_graphviz(sk, **opts) == c5.export_graphviz(**opts)
+    assert sk_tree.export_graphviz(sk, **opts) == c5.export_graphviz(palette="sklearn", **opts)
 
 
 def test_real_c5_tree_with_categories_and_missing():
@@ -129,3 +130,15 @@ def test_legacy_graphviz_signature(tmp_path):
     out = tmp_path / "t2.dot"
     clf.export_graphviz(str(out))
     assert out.read_text().startswith("digraph Tree")
+
+
+def test_default_is_coloured_with_c50py_palette():
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
+    clf = C5Classifier(pruning=False).fit(X, [0, 0, 0, 1, 1, 1])
+    dot = clf.export_graphviz()
+    assert 'style="filled"' in dot and "#26a69a" in dot.lower()   # teal, not sklearn's orange
+    assert "#e58139" not in dot.lower()
+    assert "#e58139" in clf.export_graphviz(palette="sklearn").lower()
+    custom = clf.export_graphviz(palette=["#000080", "#800000"]).lower()
+    assert "#000080" in custom
+    assert "fillcolor" not in clf.export_graphviz(filled=False)
