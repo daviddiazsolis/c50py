@@ -20,7 +20,9 @@ def _mirror_classifier(sk, n_features):
 
     def build(i):
         n = TreeNode(is_leaf=t.children_left[i] == -1)
-        counts = t.value[i][0] * t.weighted_n_node_samples[i]
+        v = t.value[i][0]
+        # scikit-learn >= 1.4 stores class fractions in tree_.value; older versions store counts
+        counts = v * t.weighted_n_node_samples[i] if np.isclose(v.sum(), 1.0) else v
         n.class_distribution = {c: float(v) for c, v in zip(sk.classes_, counts)}
         n.predicted_class = sk.classes_[np.argmax(counts)]
         if not n.is_leaf:

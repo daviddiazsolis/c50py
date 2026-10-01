@@ -40,6 +40,23 @@ TREE_LEAF = -1
 TREE_UNDEFINED = -2
 
 
+def _sklearn_draws_edge_labels() -> bool:
+    """scikit-learn >= 1.5 writes "True"/"False" on the root's arrows in plot_tree.
+
+    c50py follows the installed version, so its drawing matches the
+    scikit-learn figures of the same environment.
+    """
+    try:
+        import sklearn
+        major, minor = (int("".join(ch for ch in p if ch.isdigit()) or 0) for p in sklearn.__version__.split(".")[:2])
+        return (major, minor) >= (1, 5)
+    except Exception:
+        return True
+
+
+_EDGE_LABELS = _sklearn_draws_edge_labels()
+
+
 # -----------------------------------------------------------------------------
 # Flat (array) representation of a C5 tree, shaped like ``sklearn.tree._tree.Tree``
 # -----------------------------------------------------------------------------
@@ -678,7 +695,7 @@ class _MPLTreeExporter(_BaseTreeExporter):
             else:
                 xy_parent = ((node.parent.x + 0.5) / max_x, (max_y - node.parent.y - 0.5) / max_y)
                 ax.annotate(node.tree.label, xy_parent, xy, **kwargs)
-                if node.parent.parent is None:
+                if _EDGE_LABELS and node.parent.parent is None:
                     text_pos = ((xy_parent[0] + xy[0]) / 2, (xy_parent[1] + xy[1]) / 2)
                     if node.parent.left() == node:
                         label_text, label_ha = ("True  ", "right")

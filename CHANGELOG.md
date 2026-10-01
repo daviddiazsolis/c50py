@@ -21,6 +21,8 @@ Tree drawings identical to scikit-learn:
   Graphviz). Without `format`, `out_file` is a path or file handle, as in scikit-learn.
 - Default style follows scikit-learn (`filled=False`); the old light-blue ellipses are gone. Use
   `filled=True, rounded=True` for coloured boxes.
+- The `True`/`False` labels on the root's arrows follow the installed scikit-learn (they exist since 1.5), so the
+  figures match scikit-learn's in the same environment. Tested against scikit-learn 1.3 to 1.8.
 - `C5Regressor.fit` takes column names from a pandas DataFrame, as `C5Classifier` already did.
 
 ## 0.3.0
