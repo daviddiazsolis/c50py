@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0
+
+Tree drawings identical to scikit-learn:
+
+- New `plot_tree`, `export_graphviz` and `export_text`, as module functions (`c50py.plot_tree(model, ...)`)
+  and as estimator methods (`model.plot_tree(...)`). Same parameters, defaults, palette, node text,
+  Reingold-Tilford layout and DOT output as `sklearn.tree.plot_tree`, `sklearn.tree.export_graphviz` and
+  `sklearn.tree.export_text` (the drawing code is adapted from scikit-learn, BSD-3-Clause, and vendored so the
+  figures do not change with the installed scikit-learn version). Tests check, node by node, that a tree with
+  the same structure produces the same annotations, positions, font sizes, colours and DOT text as scikit-learn.
+- Inside the boxes: `entropy` for classifiers (the criterion C5.0 uses), `squared_error` for regressors,
+  categorical splits written `feature in {a, b}` (the `True` branch holds the listed categories), and
+  `samples` shown with decimals only when missing values were split fractionally.
+- New `tree_index` argument to draw any tree of a boosted model (`trials > 1`); previously boosted models
+  could not be drawn at all.
+- `export_graphviz` writes the DOT text itself: the `graphviz` Python package is only needed to render images.
+  Backwards compatible: `out_file=None` returns the DOT text (as before with no filename); passing `format`
+  keeps the 0.3 behaviour (basename + format, `"dot"` writes `<basename>.dot`, other formats are rendered with
+  Graphviz). Without `format`, `out_file` is a path or file handle, as in scikit-learn.
+- Default style follows scikit-learn (`filled=False`); the old light-blue ellipses are gone. Use
+  `filled=True, rounded=True` for coloured boxes.
+- `C5Regressor.fit` takes column names from a pandas DataFrame, as `C5Classifier` already did.
+
 ## 0.3.0
 
 Fidelity to C4.5/C5.0:

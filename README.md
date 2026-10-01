@@ -5,7 +5,37 @@ Quinlan’s C5.0 algorithm.  Both classification and regression trees are
 supported and expose a scikit‑learn‑like API.  The implementation is written
 from scratch in pure Python/Numpy and includes support for numeric and
 categorical variables, missing values, pre‑ and post‑pruning, boosting,
-rule tracing/export and Graphviz visualisation.
+rule tracing/export and tree drawings identical to scikit-learn's
+(`plot_tree`, `export_graphviz`, `export_text`).
+
+## What's new in 0.4.0
+
+Trees are drawn **exactly like scikit-learn**. `c50py` now has `plot_tree`, `export_graphviz` and
+`export_text` with the same parameters, defaults, colours, box text and layout as
+`sklearn.tree.plot_tree`, `sklearn.tree.export_graphviz` and `sklearn.tree.export_text`:
+
+```python
+import matplotlib.pyplot as plt
+from c50py import C5Classifier, plot_tree
+
+clf = C5Classifier(categorical_features=["region"]).fit(X, y)
+
+fig, ax = plt.subplots(figsize=(14, 6))
+clf.plot_tree(class_names=["stays", "leaves"], filled=True, rounded=True, ax=ax)   # method form
+plot_tree(clf, class_names=["stays", "leaves"], filled=True, rounded=True)         # function form, as in sklearn
+```
+
+All of scikit-learn's options work: `max_depth`, `feature_names`, `class_names`, `label`, `filled`,
+`impurity`, `node_ids`, `proportion`, `rounded`, `precision`, `ax`, `fontsize` (and, for
+`export_graphviz`, `out_file`, `leaves_parallel`, `rotate`, `special_characters`, `fontname`).
+The only extra one is `tree_index`, to draw any tree of a boosted model (`trials > 1`).
+
+What is specific to C5.0 inside the boxes: the impurity is the **entropy** (C5.0's criterion; regression
+trees show `squared_error` as in scikit-learn), categorical splits read `feature in {a, b}`, and
+`samples` can be fractional when there are missing values (C5.0 sends those cases down both branches).
+
+`export_graphviz` no longer needs the `graphviz` package to produce the DOT text, and old calls such as
+`export_graphviz("tree", format="png")` keep working.
 
 ## What's new in 0.3.0
 
@@ -25,7 +55,8 @@ Version 0.3.0 brings the classifier much closer to Quinlan's C4.5/C5.0 and makes
 - **Missing values:** Handles missing values using C5.0's fractional propagation strategy.
 - **Boosting:** Set `trials=10` to train a boosted ensemble.
 - **Rule export:** call `export_rules()` to get a list of human-readable rules.
-- **Graphviz export:** call `export_graphviz()` to visualize the tree.
+- **Tree drawing like scikit-learn:** `plot_tree()` (matplotlib), `export_graphviz()` (DOT) and
+  `export_text()`, with the same parameters and look as `sklearn.tree`.
 - **Pretty printing:** call `print_tree` to display the learned splits in a
   readable nested `if`/`else` format (single trees only).
 
@@ -57,6 +88,9 @@ clf.print_tree(feature_names=features, class_names=["No", "Yes"])
 # Extract rules for each sample
 rules = clf.predict_rule(X, feature_names=features)
 print(rules[:5])
+
+# Draw it exactly like sklearn.tree.plot_tree
+clf.plot_tree(feature_names=features, class_names=["No", "Yes"], filled=True)
 
 # Export as Graphviz
 path = clf.export_graphviz(

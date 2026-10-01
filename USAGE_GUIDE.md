@@ -17,7 +17,7 @@ While scikit-learn's CART implementation is excellent, C5.0 offers distinct adva
 
 ## Installation
 
-Requires Python 3.9+, NumPy and scikit-learn. pandas is optional (DataFrames are accepted directly).
+Requires Python 3.9+, NumPy and scikit-learn. pandas is optional (DataFrames are accepted directly); matplotlib is needed for `plot_tree`.
 
 ```bash
 pip install c50py
@@ -119,6 +119,40 @@ Enable boosting by setting `trials > 1`. This creates an ensemble of trees, wher
 clf_boost = C5Classifier(trials=10)
 clf_boost.fit(X_train, y_train)
 ```
+
+### 6. Drawing trees, exactly like scikit-learn
+
+Since 0.4.0, `c50py` draws trees with the same functions, parameters, colours and layout as
+`sklearn.tree`. Anything you write for `sklearn.tree.plot_tree` works for a c50py model:
+
+```python
+import matplotlib.pyplot as plt
+from sklearn.tree import plot_tree as sk_plot_tree
+import c50py
+
+fig, axes = plt.subplots(1, 2, figsize=(22, 7))
+c50py.plot_tree(c5_model, class_names=["No", "Yes"], filled=True, rounded=True, ax=axes[0])
+sk_plot_tree(cart_model, feature_names=cols, class_names=["No", "Yes"], filled=True, rounded=True, ax=axes[1])
+```
+
+| Function | Same as | Notes |
+|---|---|---|
+| `plot_tree(model, ...)` / `model.plot_tree(...)` | `sklearn.tree.plot_tree` | matplotlib figure |
+| `export_graphviz(model, ...)` / `model.export_graphviz(...)` | `sklearn.tree.export_graphviz` | DOT text; render with `graphviz.Source(dot)` |
+| `export_text(model, ...)` / `model.export_text(...)` | `sklearn.tree.export_text` | text report |
+
+Parameters: `max_depth`, `feature_names`, `class_names` (list or `True`), `label`, `filled`, `impurity`,
+`node_ids`, `proportion`, `rounded`, `precision`, `ax`, `fontsize`; plus, for `export_graphviz`,
+`out_file`, `leaves_parallel`, `rotate`, `special_characters`, `fontname`. The extra `tree_index`
+selects a tree of a boosted model: `clf_boost.plot_tree(tree_index=3)`.
+
+Feature names default to the ones seen in `fit` (a DataFrame's columns or the `feature_names`
+argument); with no names, boxes read `x[0], x[1], ...` as in scikit-learn.
+
+What differs inside the boxes comes from the model, not the drawing: classifiers show `entropy`
+(C5.0's criterion) instead of `gini`; categorical splits read `feature in {a, b}` with the listed
+categories on the `True` (left) branch; and `samples` can be fractional when cases with missing values
+were split between branches.
 
 ---
 

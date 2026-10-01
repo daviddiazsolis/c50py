@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "c50py"
-version = "0.3.0"
+version = "0.4.0"
 description = "C5.0-like Decision Trees in Python (scikit-learn style)"
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,6 +25,7 @@ classifiers = [
 
 [project.optional-dependencies]
 graphviz = ["graphviz>=0.20"]
+plot = ["matplotlib>=3.3"]
 
 [project.urls]
 Homepage = "https://github.com/daviddiazsolis/c50py"

@@ -105,9 +105,10 @@ class RegrNode:
 
 # ----------------------------- Regressor -----------------------------
 
+from ._export import _TreeExportMixin
 from sklearn.base import BaseEstimator, RegressorMixin
 
-class C5Regressor(BaseEstimator, RegressorMixin):
+class C5Regressor(_TreeExportMixin, BaseEstimator, RegressorMixin):
     r"""
     C5Regressor(min_samples_split=2, min_samples_leaf=2, pruning=True,
                 cf=0.25, global_pruning=True, categorical_features=None,
@@ -215,6 +216,9 @@ class C5Regressor(BaseEstimator, RegressorMixin):
     # ----------------------------- Public API -----------------------------
 
     def fit(self, X, y, sample_weight: Optional[np.ndarray] = None, feature_names: Optional[List[str]] = None):
+        # pandas support: column names become feature names (as in C5Classifier)
+        if hasattr(X, "columns") and feature_names is None and getattr(self, "feature_names", None) is None:
+            feature_names = [str(c) for c in X.columns]
         X = np.asarray(X, dtype=object)
         y = _as_float_array(y)
         n, m = X.shape
@@ -236,6 +240,7 @@ class C5Regressor(BaseEstimator, RegressorMixin):
         else:
              self.feature_names_ = None
 
+        self.n_features_ = m
         self.is_cat_ = self._infer_categorical_features(X)
         # Gather categorical values up to cap
         self.cat_values_.clear()
@@ -416,89 +421,6 @@ class C5Regressor(BaseEstimator, RegressorMixin):
             in_left = (not _isnan_scalar(x[node.feature_index])) and (x[node.feature_index] in node.threshold)
             parts.append(f"{name} " + ("IN " if in_left else "NOT IN ") + S)
             return self._trace_rule(x, node.children["left" if in_left else "right"], fn, parts)
-
-    def export_graphviz(self, filename: str | None = None, feature_names: Optional[List[str]] = None,
-                        format: str = "png") -> str:
-        """
-        Export the regression tree to Graphviz format.
-
-        This method mirrors the behaviour of :meth:`C5Classifier.export_graphviz`.  If
-        ``format='dot'`` the DOT source is written directly to disk without
-        invoking the external ``dot`` binary.  For other formats the method
-        attempts to call Graphviz; if it is unavailable the method falls back
-        to writing a ``.dot`` file.
-
-        Parameters
-        ----------
-        filename : str or None, default=None
-            Basename of the output file. If None, the DOT source code is returned
-            as a string and no file is written.
-        feature_names : list[str], optional
-            Names for the input features.  Defaults to those provided at
-            construction time.
-        format : str, default="png"
-            Desired output format for Graphviz; ``'dot'`` writes only a DOT
-            file.
-
-        Returns
-        -------
-        str
-            Path to the written file, or the DOT source code if filename is None.
-
-        Raises
-        ------
-        ValueError
-            If the model has not been fitted.
-        """
-        if getattr(self, 'tree_', None) is None:
-            raise ValueError("Estimator not fitted. Call fit(...) first.")
-        fn = self._maybe_feature_names(feature_names)
-        # create graphviz graph lazily; import locally to avoid hard dependency
-        try:
-            from graphviz import Digraph
-        except Exception as e:
-            raise RuntimeError("Please install the 'graphviz' Python package.") from e
-        dot = Digraph(comment="C5Regressor", format=format)
-        self._add_graph_nodes(dot, self.tree_, "root", fn)
-        
-        if filename is None:
-            return dot.source
-
-        # dot-only output does not require calling the external binary
-        if format.lower() == "dot":
-            path = f"{filename}.dot"
-            dot.save(path)
-            return path
-        try:
-            dot.render(filename, cleanup=True)
-            return f"{filename}.{format}"
-        except Exception:
-            fallback_path = f"{filename}.dot"
-            dot.save(fallback_path)
-            return fallback_path
-
-    def _add_graph_nodes(self, dot, node, node_id: str, fn=None):
-        if node is None:
-            dot.node(node_id, "<empty>")
-            return
-        if node.is_leaf:
-            dot.node(node_id, f"Leaf\nvalue={node.predicted_value:.6g}\nN={node.n_samples:.2f}")
-            return
-        name = (fn[node.feature_index] if (fn is not None and 0 <= node.feature_index < len(fn))
-                else f"X[{node.feature_index}]")
-        if node.split_type == "numeric":
-            label = f"{name} <= {node.threshold:.6g}\nN={node.n_samples:.2f}"
-        else:
-            S = "{" + ", ".join(map(str, sorted(node.threshold))) + "}"
-            label = f"{name} in {S}\nN={node.n_samples:.2f}"
-        dot.node(node_id, label)
-        # children
-        left_id = node_id + "L"
-        right_id = node_id + "R"
-        dot.edge(node_id, left_id, label="True")
-        dot.edge(node_id, right_id, label="False")
-        self._add_graph_nodes(dot, node.children["left"], left_id, fn)
-        self._add_graph_nodes(dot, node.children["right"], right_id, fn)
 
     # ----------------------------- Core training -----------------------------
 

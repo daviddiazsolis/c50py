@@ -37,6 +37,7 @@ structure for each node in the tree (internal or leaf).
 
 from __future__ import annotations
 import numpy as np
+from ._export import _TreeExportMixin
 from sklearn.base import BaseEstimator, ClassifierMixin
 from collections import Counter
 from itertools import combinations
@@ -181,7 +182,7 @@ class TreeNode:
 # -----------------------------------------------------------------------------
 # Classifier
 # -----------------------------------------------------------------------------
-class C5Classifier(BaseEstimator, ClassifierMixin):
+class C5Classifier(_TreeExportMixin, BaseEstimator, ClassifierMixin):
     """
     Decision tree classifier inspired by Quinlan's C5.0.
 
@@ -533,81 +534,6 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
         rules: list[str] = []
         self._collect_rules(self.tree_, [], rules, self._maybe_feature_names(feature_names), class_names)
         return rules
-
-    def export_graphviz(self, filename: str | None = None, *, feature_names=None,
-                        class_names=None, format: str = "png") -> str:
-        """
-        Export the tree structure in Graphviz format.
-
-        For single trees (``trials=1``) this method produces a representation of
-        the learned decision structure using the `graphviz` Python package.
-        The output can be generated in various formats supported by Graphviz,
-        including images (``'png'``, ``'pdf'``, etc.) and plain DOT files.  When
-        requesting a DOT file (``format='dot'``) no external Graphviz binary is
-        required; the DOT source is written directly to disk.  For other
-        formats this method attempts to invoke the system ``dot`` command; if
-        it is unavailable the method falls back to writing a ``.dot`` file
-        instead.
-
-        Parameters
-        ----------
-        filename : str or None, default=None
-            Basename of the output file (the extension is determined by
-            ``format``). If None, the DOT source code is returned as a string
-            and no file is written.
-        feature_names : list[str], optional
-            Custom names for the input features.  Defaults to the names
-            provided at construction time.
-        class_names : list[str], optional
-            Custom names for the classes, ordered according to
-            :attr:`classes_`.
-        format : str, default="png"
-            Desired output format for Graphviz.  Supported values include
-            ``'png'``, ``'pdf'``, ``'svg'`` and ``'dot'``.  The special value
-            ``'dot'`` writes the DOT source directly and does not call the
-            external ``dot`` command.
-
-        Returns
-        -------
-        str
-            Path to the written file, or the DOT source code if filename is None.
-
-        Raises
-        ------
-        ValueError
-            If the estimator is not fitted or if ``trials != 1``.
-        """
-        # Graphviz export is only supported for single trees
-        if self.trials != 1:
-            raise ValueError("export_graphviz only available when trials=1")
-        if getattr(self, 'tree_', None) is None:
-            raise ValueError("Estimator not fitted. Call fit(...) first.")
-        # Build the Graphviz object
-        try:
-            import graphviz
-        except ImportError:
-            raise RuntimeError("Graphviz is required for export_graphviz but not installed.")
-        dot = graphviz.Digraph(format=format)
-        self._add_graph_nodes(dot, self.tree_, "0", self._maybe_feature_names(feature_names), class_names)
-        
-        if filename is None:
-            return dot.source
-            
-        # If the user requests a dot file we avoid invoking the external
-        # Graphviz binary entirely: save the dot source and return.
-        if format.lower() == "dot":
-            path = f"{filename}.dot"
-            dot.save(path)
-            return path
-        # Otherwise attempt to render using the installed dot executable.
-        try:
-            dot.render(filename, cleanup=True)
-            return f"{filename}.{format}"
-        except Exception:
-            # On failure (e.g. missing graphviz binary) fall back to a dot file
-            fallback_path = f"{filename}.dot"
-            dot.save(fallback_path)
-            return fallback_path
 
     def print_tree(self, feature_names=None, class_names=None):
         """
@@ -1157,25 +1083,6 @@ class C5Classifier(BaseEstimator, ClassifierMixin):
             right = f"{name} NOT IN {S}"
             self._collect_rules(node.children["left"],  parts + [left],  rules, fn, cn)
             self._collect_rules(node.children["right"], parts + [right], rules, fn, cn)
-
-    def _add_graph_nodes(self, dot, node: TreeNode, name: str, fn, cn):
-        if node.is_leaf:
-            pred = cn[node.predicted_class] if cn is not None else str(node.predicted_class)
-            dot.node(name, f"class={pred}\n{dict(node.class_distribution)}",
-                    shape="box", style="filled", color="lightgrey")
-            return
-        fname = (fn[node.feature_index] if (fn is not None and 0 <= node.feature_index < len(fn))
-                else f"X[{node.feature_index}]")
-        if node.split_type == "numeric":
-            label = f"{fname} <= {node.threshold:.4f}"
-        else:
-            label = f"{fname} ∈ " + "{" + ", ".join(map(str, sorted(node.threshold))) + "}"
-        dot.node(name, label, shape="ellipse", style="filled", color="lightblue")
-        l_id, r_id = name + "L", name + "R"
-        self._add_graph_nodes(dot, node.children["left"],  l_id, fn, cn)
-        self._add_graph_nodes(dot, node.children["right"], r_id, fn, cn)
-        dot.edge(name, l_id, label="True")
-        dot.edge(name, r_id, label="False")
 
     def _print_node(self, node: TreeNode, indent="", fn=None, cn=None):
         if node.is_leaf:

@@ -77,8 +77,10 @@ def test_classifier_trials_rule_error():
         clf.predict_rule(X)
     with pytest.raises(ValueError):
         clf.export_rules()
+    # since 0.4.0 each tree of the ensemble can be drawn with tree_index
+    assert clf.export_graphviz(tree_index=0).startswith('digraph Tree')
     with pytest.raises(ValueError):
-        clf.export_graphviz()
+        clf.export_graphviz(tree_index=len(clf.ensemble_))
     with pytest.raises(ValueError):
         clf.print_tree()
 
