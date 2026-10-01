@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1
+
+- Colours by default (`filled=True`) with c50py's own palette (teal, violet, gold, rose, sky, lime; checked for
+  colour-blind separation), so a C5.0 tree is recognisable next to scikit-learn's orange/blue CART trees.
+  `palette="sklearn"` gives scikit-learn's exact colours; a list of colours sets one per class.
+- Colour codes are always written with two hex digits per channel (custom palettes with dark colours
+  produced invalid codes such as `#80 0 0`).
+
 ## 0.4.0
 
 Tree drawings identical to scikit-learn:
@@ -22,9 +30,6 @@ Tree drawings identical to scikit-learn:
 - The old light-blue ellipses are gone: same box layout as scikit-learn.
 - The `True`/`False` labels on the root's arrows follow the installed scikit-learn (they exist since 1.5), so the
   figures match scikit-learn's in the same environment. Tested against scikit-learn 1.3 to 1.8.
-- Colours by default (`filled=True`) with c50py's own palette (teal, violet, gold, rose, sky, lime; checked for
-  colour-blind separation), so a C5.0 tree is recognisable next to scikit-learn's orange/blue CART trees.
-  `palette="sklearn"` gives scikit-learn's exact colours; a list of colours sets one per class.
 - `C5Regressor.fit` takes column names from a pandas DataFrame, as `C5Classifier` already did.
 
 ## 0.3.0

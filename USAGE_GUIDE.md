@@ -122,7 +122,7 @@ clf_boost.fit(X_train, y_train)
 
 ### 6. Drawing trees, exactly like scikit-learn
 
-Since 0.4.0, `c50py` draws trees with the same functions, parameters, colours and layout as
+Since 0.4.0, `c50py` draws trees with the same functions, parameters and layout as
 `sklearn.tree`. Anything you write for `sklearn.tree.plot_tree` works for a c50py model:
 
 ```python

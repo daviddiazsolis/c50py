@@ -8,7 +8,7 @@ categorical variables, missing values, pre‑ and post‑pruning, boosting,
 rule tracing/export and tree drawings identical to scikit-learn's
 (`plot_tree`, `export_graphviz`, `export_text`).
 
-## What's new in 0.4.0
+## What's new in 0.4 (0.4.0 and 0.4.1)
 
 Trees are drawn **exactly like scikit-learn**. `c50py` now has `plot_tree`, `export_graphviz` and
 `export_text` with the same parameters, defaults, colours, box text and layout as
