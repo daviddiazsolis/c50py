@@ -1,6 +1,6 @@
 # c50py Usage Guide
 
-**`c50py`** is a modern Python implementation of Quinlan's C5.0 algorithm, designed to be a drop-in replacement for scikit-learn's `DecisionTreeClassifier` but with powerful additional features.
+**`c50py`** is a modern Python implementation of Quinlan's C5.0 algorithm, designed to work as a scikit-learn estimator (it passes `check_estimator`, and works with `Pipeline`, `cross_val_score` and `GridSearchCV`) while keeping what is specific to C5.0.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/daviddiazsolis/c50py/blob/main/examples/c50py_comprehensive_tutorial.ipynb)
 
@@ -10,7 +10,7 @@ While scikit-learn's CART implementation is excellent, C5.0 offers distinct adva
 
 1.  **Native Categorical Support**: No need for One-Hot Encoding. Splits are based on subsets of categories (e.g., `{A, B} vs {C, D}`), leading to simpler, more interpretable trees.
 2.  **Robust Missing Value Handling**: Uses fractional case propagation instead of imputation, preserving data integrity.
-3.  **Rule-Based Models**: Can generate easy-to-read rulesets.
+3.  **Readable rules**: every leaf can be exported as an if-then rule (`export_rules`). These are the rules of the tree, one per leaf; C5.0's simplified rulesets are not implemented yet.
 4.  **Boosting**: Implements C5.0-style boosting (similar to AdaBoost.M1) for higher accuracy.
 
 ---
@@ -65,10 +65,13 @@ Imagine a `City` feature with values `{NY, LA, CHI, HOU}`.
 *   **C5.0**: `if City in {NY, CHI}` then Left else Right.
 
 ```python
-# Specify categorical features by index or name
-clf = C5Classifier(categorical_features=["City", "State"])
-# OR let c50py infer them (object/category/bool columns)
-clf = C5Classifier(infer_categorical=True)
+# By default (infer_categorical=True) pandas category/object/string/bool
+# columns, and object columns holding strings, are treated as categorical
+clf = C5Classifier()
+# Add more columns by name or index, e.g. integer codes
+clf = C5Classifier(categorical_features=["City", "zip_code"])
+# Or use only the columns you list
+clf = C5Classifier(infer_categorical=False, categorical_features=["City"])
 ```
 
 ### 2. Missing Value Handling

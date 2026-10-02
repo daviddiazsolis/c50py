@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.4.2
+
+Works anywhere a scikit-learn estimator works:
+
+- `C5Classifier` and `C5Regressor` pass scikit-learn's `check_estimator` (tested on scikit-learn 1.9).
+  `get_params`, `set_params` and `clone` work, so `GridSearchCV`, `cross_val_score` and `Pipeline` work
+  (before, every one of them failed with `AttributeError: 'C5Classifier' object has no attribute
+  'feature_names'`). The constructors now store their parameters as given; fitted attributes are only
+  created in `fit`.
+- Input validation as in scikit-learn: `n_features_in_` and `feature_names_in_`, a clear error when
+  `predict` gets a different number of columns, `NotFittedError` before `fit`, sparse input rejected with
+  a message, invalid targets and negative or all-zero `sample_weight` rejected.
+- Cases with zero weight are ignored, so weighting a case by `k` is the same as repeating it `k` times.
+  The regressor breaks ties between equally good splits deterministically.
+
+Categorical columns:
+
+- `C5Classifier(infer_categorical=True)` is now the default (as in `C5Regressor`): pandas `category`,
+  `object`, `string` and `bool` columns, and object columns holding strings, are categorical without
+  any configuration. Before, a DataFrame with a text column failed with `could not convert string to
+  float` unless `categorical_features` was given.
+- With `infer_categorical=False`, a text column that is not in `categorical_features` raises a clear
+  error naming the column. Unknown names in `categorical_features` also raise a clear error.
+- `pd.NA` (nullable `string`, `Int64`, `boolean` columns) is treated as missing.
+- `C5Regressor` accepts `categorical_features` by name with a DataFrame (before it needed the
+  `feature_names` parameter).
+
+Fixes:
+
+- `export_rules(class_names=...)` and `print_tree(class_names=...)` failed with string labels
+  (`TypeError: list indices must be integers`); `class_names` follow the order of `classes_`.
+- Docstrings: `cf` (smaller values prune more), `global_pruning` (off by default in the classifier),
+  `infer_categorical`, `numeric_threshold_strategy` (`"all"` by default) and `mdl_penalty` were wrong or
+  missing.
+
+Project:
+
+- License: MIT, as already declared on PyPI (the repository's `LICENSE` file said GPL-3.0). The
+  scikit-learn drawing code keeps its BSD-3-Clause notice.
+- New README with a CART vs c50py comparison (`examples/make_readme_figure.py`) and quickstarts that
+  run as written; tests for scikit-learn compatibility; GitHub Actions for tests and for publishing to
+  PyPI.
+
 ## 0.4.1
 
 - Colours by default (`filled=True`) with c50py's own palette (teal, violet, gold, rose, sky, lime; checked for

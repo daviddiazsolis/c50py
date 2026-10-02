@@ -12,4 +12,4 @@ from .regressor import C5Regressor
 from ._export import plot_tree, export_graphviz, export_text
 
 __all__ = ["C5Classifier", "C5Regressor", "plot_tree", "export_graphviz", "export_text"]
-__version__ = "0.4.1"
+__version__ = "0.4.2"

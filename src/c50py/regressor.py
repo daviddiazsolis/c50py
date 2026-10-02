@@ -107,8 +107,9 @@ class RegrNode:
 
 from ._export import _TreeExportMixin
 from sklearn.base import BaseEstimator, RegressorMixin
+from . import _validation as _v
 
-class C5Regressor(_TreeExportMixin, BaseEstimator, RegressorMixin):
+class C5Regressor(_TreeExportMixin, RegressorMixin, BaseEstimator):
     r"""
     C5Regressor(min_samples_split=2, min_samples_leaf=2, pruning=True,
                 cf=0.25, global_pruning=True, categorical_features=None,
@@ -141,7 +142,7 @@ class C5Regressor(_TreeExportMixin, BaseEstimator, RegressorMixin):
     pruning : bool, default=True
         Whether to run pessimistic pruning.
     cf : float, default=0.25
-        Confidence factor in (0, 1). Larger values prune **more** aggressively.
+        Confidence factor in (0, 1), as in C5.0: smaller values prune more.
     global_pruning : bool, default=True
         Apply a simple global merge step after local pruning.
     categorical_features : sequence of int or str, optional
@@ -164,6 +165,9 @@ class C5Regressor(_TreeExportMixin, BaseEstimator, RegressorMixin):
         Reserved for reproducibility; training itself is deterministic.
     verbose : int, default=0
         Verbosity level (0 = silent).
+    numeric_threshold_strategy, max_numeric_thresholds
+        Accepted for symmetry with ``C5Classifier``; the regressor currently
+        evaluates every numeric threshold.
 
     Attributes
     ----------
@@ -176,74 +180,69 @@ class C5Regressor(_TreeExportMixin, BaseEstimator, RegressorMixin):
     """
 
     def __init__(self,
-                 min_samples_split: int = 2,
-                 min_samples_leaf: int = 2,
-                 pruning: bool = True,
-                 cf: float = 0.25,
-                 global_pruning: bool = True,
-                 categorical_features: Optional[Iterable[int | str]] = None,
-                 infer_categorical: bool = True,
-                 int_as_categorical: bool = False,
-                 max_categories: int = 50,
-                 max_categories_exhaustive: int = 12,
-                 mdl_penalty_strength: float = 0.0,
-                 min_sse_gain: float = 0.0,
-                 feature_names: Optional[List[str]] = None,
-                 random_state: Optional[int] = None,
-                 verbose: int = 0, numeric_threshold_strategy: str = 'quantile', max_numeric_thresholds: int = 64):
-        self.min_samples_split = int(min_samples_split)
-        self.min_samples_leaf = int(min_samples_leaf)
-        self.pruning = bool(pruning)
-        self.cf = float(cf)
-        self.global_pruning = bool(global_pruning)
-        self.categorical_features = list(categorical_features) if categorical_features is not None else None
-        self.infer_categorical = bool(infer_categorical)
-        self.int_as_categorical = bool(int_as_categorical)
-        self.max_categories = int(max_categories)
-        self.max_categories_exhaustive = int(max_categories_exhaustive)
-        self.mdl_penalty_strength = float(mdl_penalty_strength)
-        self.min_sse_gain = float(min_sse_gain)
-        self.feature_names = list(feature_names) if feature_names is not None else None
+                 min_samples_split=2,
+                 min_samples_leaf=2,
+                 pruning=True,
+                 cf=0.25,
+                 global_pruning=True,
+                 categorical_features=None,
+                 infer_categorical=True,
+                 int_as_categorical=False,
+                 max_categories=50,
+                 max_categories_exhaustive=12,
+                 mdl_penalty_strength=0.0,
+                 min_sse_gain=0.0,
+                 feature_names=None,
+                 random_state=None,
+                 verbose=0,
+                 numeric_threshold_strategy="all",
+                 max_numeric_thresholds=64):
+        # scikit-learn convention: store the parameters exactly as given.
+        self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
+        self.pruning = pruning
+        self.cf = cf
+        self.global_pruning = global_pruning
+        self.categorical_features = categorical_features
+        self.infer_categorical = infer_categorical
+        self.int_as_categorical = int_as_categorical
+        self.max_categories = max_categories
+        self.max_categories_exhaustive = max_categories_exhaustive
+        self.mdl_penalty_strength = mdl_penalty_strength
+        self.min_sse_gain = min_sse_gain
+        self.feature_names = feature_names
         self.random_state = random_state
-        self.verbose = int(verbose)
+        self.verbose = verbose
+        self.numeric_threshold_strategy = numeric_threshold_strategy
+        self.max_numeric_thresholds = max_numeric_thresholds
 
-        # Fitted attributes
-        self.tree_: Optional[RegrNode] = None
-        self.is_cat_: Optional[np.ndarray] = None
-        self.cat_values_: Dict[int, Tuple[Any, ...]] = {}
-        self.feature_names_: Optional[List[str]] = self.feature_names
+    def __sklearn_tags__(self):
+        tags = super().__sklearn_tags__()
+        tags.input_tags.allow_nan = True
+        return tags
+
+    def _more_tags(self):  # scikit-learn < 1.6
+        return {"allow_nan": True}
 
     # ----------------------------- Public API -----------------------------
 
-    def fit(self, X, y, sample_weight: Optional[np.ndarray] = None, feature_names: Optional[List[str]] = None):
-        # pandas support: column names become feature names (as in C5Classifier)
-        if hasattr(X, "columns") and feature_names is None and getattr(self, "feature_names", None) is None:
-            feature_names = [str(c) for c in X.columns]
+    def fit(self, X, y, sample_weight=None, feature_names=None):
+        """Build the regression tree.  ``X`` may be a pandas DataFrame with
+        numeric, categorical and missing values (see ``C5Classifier.fit``)."""
+        X, y, dtypes = _v.validate_fit(self, X, y, y_numeric=True)
         X = np.asarray(X, dtype=object)
         y = _as_float_array(y)
+        w = _v.sample_weights(sample_weight, X)
         n, m = X.shape
-        if sample_weight is None:
-            w = np.ones(n, dtype=float)
-        else:
-            w = _as_float_array(sample_weight).copy()
-            if w.shape[0] != n:
-                raise ValueError("sample_weight must have same length as y")
-
-        if feature_names is not None:
-            if len(feature_names) != m:
-                raise ValueError("feature_names length must match X.shape[1]")
-            self.feature_names_ = list(feature_names)
-        elif self.feature_names is not None and len(self.feature_names) != m:
-            raise ValueError("feature_names length must match X.shape[1]")
-        elif self.feature_names is not None:
-             self.feature_names_ = list(self.feature_names)
-        else:
-             self.feature_names_ = None
-
         self.n_features_ = m
-        self.is_cat_ = self._infer_categorical_features(X)
+        self.feature_names_ = _v.resolve_feature_names(self, feature_names, m)
+        self.is_cat_ = _v.categorical_mask(self, X, dtypes, self.feature_names_)
+        self.cat_values_ = {}
+        keep = w > 0  # zero-weight cases are ignored, as in C5.0
+        if not keep.all():
+            X, y, w = X[keep], y[keep], w[keep]
+            n = X.shape[0]
         # Gather categorical values up to cap
-        self.cat_values_.clear()
         for j in range(m):
             if self.is_cat_[j]:
                 col = X[:, j]
@@ -270,9 +269,7 @@ class C5Regressor(_TreeExportMixin, BaseEstimator, RegressorMixin):
         return self
 
     def predict(self, X):
-        X = np.asarray(X, dtype=object)
-        if self.tree_ is None:
-            raise ValueError("Model is not fitted.")
+        X = np.asarray(_v.validate_predict(self, X), dtype=object)
         out = np.empty(X.shape[0], dtype=float)
         for i, x in enumerate(X):
             out[i] = self._predict_instance(x, self.tree_)
@@ -424,41 +421,6 @@ class C5Regressor(_TreeExportMixin, BaseEstimator, RegressorMixin):
 
     # ----------------------------- Core training -----------------------------
 
-    def _infer_categorical_features(self, X: np.ndarray) -> np.ndarray:
-        m = X.shape[1]
-        is_cat = np.zeros(m, dtype=bool)
-        if self.categorical_features is not None:
-            try:
-                seq = list(self.categorical_features)
-            except TypeError:
-                seq = [self.categorical_features]
-            if len(seq) > 0 and isinstance(seq[0], str):
-                if self.feature_names is None:
-                    raise ValueError("feature_names must be provided when categorical_features are given by name.")
-                name_to_idx = {n: i for i, n in enumerate(self.feature_names)}
-                for name in seq:
-                    idx = name_to_idx.get(name, None)
-                    if idx is not None:
-                        is_cat[idx] = True
-            else:
-                for j in seq:
-                    try:
-                        is_cat[int(j)] = True
-                    except Exception:
-                        pass
-        if self.infer_categorical:
-            for j in range(m):
-                col = X[:, j]
-                if is_cat[j]:
-                    continue
-                if col.dtype == object:
-                    # consider strings/bools as categorical
-                    any_str = any((isinstance(v, str) for v in col if not _isnan_scalar(v)))
-                    any_bool = any((isinstance(v, (bool, np.bool_)) for v in col if not _isnan_scalar(v)))
-                    if any_str or any_bool:
-                        is_cat[j] = True
-        return is_cat
-
     def _build_tree(self, X: np.ndarray, y: np.ndarray, w: np.ndarray) -> RegrNode:
         n_eff = float(w.sum())
         mu = _wmean(y, w)
@@ -517,6 +479,9 @@ class C5Regressor(_TreeExportMixin, BaseEstimator, RegressorMixin):
         n, m = X.shape
         best = None
         best_score = -float("inf")
+        # ties (up to rounding) go to the first candidate, so that weighting a
+        # case by 2 and duplicating it grow the same tree
+        tol = 1e-9 * max(1.0, abs(float(sse_parent)))
 
         # Precompute totals for missing assignment
         for j in range(m):
@@ -579,7 +544,7 @@ class C5Regressor(_TreeExportMixin, BaseEstimator, RegressorMixin):
                     # Score (no MDL penalty for numeric)
                     score = gain_raw
 
-                    if score > best_score and gain_raw > 0:
+                    if score > best_score + tol and gain_raw > 0:
                         thr = 0.5 * (v[i] + v[i+1])
                         # masks on known
                         left_known = np.zeros(n, dtype=bool); right_known = np.zeros(n, dtype=bool)
@@ -696,7 +661,7 @@ class C5Regressor(_TreeExportMixin, BaseEstimator, RegressorMixin):
                         else:
                             right_known[i] = True
                     miss_mask = np.array([_isnan_scalar(v) for v in col])
-                    if score > best_score:
+                    if score > best_score + tol:
                         best_score = score
                         best = (j, "categorical", set(sel), float(graw), float(pl), left_known, right_known, miss_mask)
 

@@ -1,161 +1,159 @@
-# c50py — C5.0‑style Decision Trees for Python (clean 0.2.0)
+# c50py: C5.0 decision trees for Python, with native categorical splits
 
-`c50py` provides transparent, easily inspectable decision trees modelled on
-Quinlan’s C5.0 algorithm.  Both classification and regression trees are
-supported and expose a scikit‑learn‑like API.  The implementation is written
-from scratch in pure Python/Numpy and includes support for numeric and
-categorical variables, missing values, pre‑ and post‑pruning, boosting,
-rule tracing/export and tree drawings identical to scikit-learn's
-(`plot_tree`, `export_graphviz`, `export_text`).
+[![PyPI](https://img.shields.io/pypi/v/c50py.svg)](https://pypi.org/project/c50py/)
+[![Python](https://img.shields.io/pypi/pyversions/c50py.svg)](https://pypi.org/project/c50py/)
+[![Tests](https://github.com/daviddiazsolis/c50py/actions/workflows/tests.yml/badge.svg)](https://github.com/daviddiazsolis/c50py/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/daviddiazsolis/c50py/blob/main/LICENSE)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/daviddiazsolis/c50py/blob/main/examples/c50py_comprehensive_tutorial.ipynb)
 
-## What's new in 0.4 (0.4.0 and 0.4.1)
+Decision trees were born able to split on categories. Quinlan's ID3, C4.5 and
+C5.0 ask questions like *"is the sector in {mining, tourism, construction}?"*.
+scikit-learn's CART only splits on numbers, so categorical columns have to be
+one-hot encoded first, and one question becomes a staircase of dummy variables.
 
-Trees are drawn **exactly like scikit-learn**. `c50py` now has `plot_tree`, `export_graphviz` and
-`export_text` with the same parameters, defaults, colours, box text and layout as
-`sklearn.tree.plot_tree`, `sklearn.tree.export_graphviz` and `sklearn.tree.export_text`:
+`c50py` brings the C5.0 way back to Python, as a scikit-learn estimator:
 
-```python
-import matplotlib.pyplot as plt
-from c50py import C5Classifier, plot_tree
+![Same data, CART with one-hot encoding (8 leaves) vs c50py (2 leaves), same test accuracy](https://raw.githubusercontent.com/daviddiazsolis/c50py/main/docs/img/cart_vs_c50py.png)
 
-clf = C5Classifier(categorical_features=["region"]).fit(X, y)
+*Same data, same test accuracy (0.782), both pruned by 5-fold cross-validation.
+CART needs three dummy variables and 8 leaves; C5.0 asks one question.
+Reproduce it with [`examples/make_readme_figure.py`](examples/make_readme_figure.py).*
 
-fig, ax = plt.subplots(figsize=(14, 6))
-clf.plot_tree(class_names=["stays", "leaves"], filled=True, rounded=True, ax=ax)   # method form
-plot_tree(clf, class_names=["stays", "leaves"], filled=True, rounded=True)         # function form, as in sklearn
-```
-
-All of scikit-learn's options work: `max_depth`, `feature_names`, `class_names`, `label`, `filled`,
-`impurity`, `node_ids`, `proportion`, `rounded`, `precision`, `ax`, `fontsize` (and, for
-`export_graphviz`, `out_file`, `leaves_parallel`, `rotate`, `special_characters`, `fontname`).
-Two extras: `tree_index`, to draw any tree of a boosted model (`trials > 1`), and `palette`. Unlike
-scikit-learn, c50py colours the boxes by default with its own palette (teal, violet, gold, ...), so a C5.0
-tree is easy to tell apart from a CART tree; `palette="sklearn"` gives scikit-learn's orange/blue exactly,
-and `filled=False` gives white boxes.
-
-What is specific to C5.0 inside the boxes: the impurity is the **entropy** (C5.0's criterion; regression
-trees show `squared_error` as in scikit-learn), categorical splits read `feature in {a, b}`, and
-`samples` can be fractional when there are missing values (C5.0 sends those cases down both branches).
-
-`export_graphviz` no longer needs the `graphviz` package to produce the DOT text, and old calls such as
-`export_graphviz("tree", format="png")` keep working.
-
-## What's new in 0.3.0
-
-Version 0.3.0 brings the classifier much closer to Quinlan's C4.5/C5.0 and makes it faster:
-
-- **Pessimistic pruning as in C4.5.** Leaves are penalised with the binomial upper limit (`AddErrs` from `prune.c`) and the original confidence-factor table (cf = 0.25 gives a deviate of about 0.69). Pure leaves now receive a positive penalty, so tiny leaves that only memorised the data are pruned. The previous normal approximation gave pure leaves zero penalty, so trees with pure leaves were never pruned, and the old "global" pass could collapse a useful tree into a single leaf on imbalanced data. `global_pruning` is now off by default.
-- **Split selection as in C4.5.** Gain ratio competes only among features whose gain is at least the average gain (`gain_ratio_avg_gain=True`); unknown cases count as an extra branch in the split information; and continuous attributes pay the MDL penalty of C4.5 Release 8 (`mdl_penalty=True`).
-- **Exhaustive, vectorised numeric thresholds.** `numeric_threshold_strategy="all"` is now the default and is evaluated with cumulative sums, so it is faster than the old 32-quantile subsample.
-- **pandas DataFrames are accepted directly**, column names become feature names, and `infer_categorical=True` is honoured by the classifier (object, category, bool and string columns). `print_tree`, `export_rules`, `predict_rule` and `export_graphviz` default to the names seen in `fit`.
-- **Boosting.** A perfect first tree no longer gets an arbitrary weight of 10; it gets a finite AdaBoost weight and boosting stops, as in C5.0. Combined with the new pruning, `trials > 1` now works from `min_samples_leaf=1`.
-
-## Features
-
-- **Scikit-learn API:** `fit(X, y)`, `predict(X)`, `score(X, y)`.
-- **Categorical support:** Pass `categorical_features=[0, 2]` to handle categories natively.
-- **Sample weights:** Supports `sample_weight` in `fit` for weighted splitting and pruning.
-- **Missing values:** Handles missing values using C5.0's fractional propagation strategy.
-- **Boosting:** Set `trials=10` to train a boosted ensemble.
-- **Rule export:** call `export_rules()` to get a list of human-readable rules.
-- **Tree drawing like scikit-learn:** `plot_tree()` (matplotlib), `export_graphviz()` (DOT) and
-  `export_text()`, with the same parameters and look as `sklearn.tree`.
-- **Pretty printing:** call `print_tree` to display the learned splits in a
-  readable nested `if`/`else` format (single trees only).
-
-## Documentation
-
-For a comprehensive guide on how to use `c50py`, including advanced features and examples, please see the [Usage Guide](USAGE_GUIDE.md).
-
-## Installation (development mode)
-
-Install the package into your environment in editable mode:
+## Install
 
 ```bash
-pip install -e .
+pip install c50py
 ```
 
-## Quickstart (Classification)
+Python 3.9+, NumPy and scikit-learn. pandas is optional (DataFrames are used
+directly) and matplotlib is needed for `plot_tree`.
+
+## Quickstart
 
 ```python
 import pandas as pd
-from time import perf_counter
+from sklearn.model_selection import train_test_split
 from c50py import C5Classifier
 
-df = pd.read_csv("titanic.csv")
-t0 = perf_counter(); clf.fit(X, y); print(f"fit: {perf_counter()-t0:.3f}s")
+url = "https://raw.githubusercontent.com/daviddiazsolis/c50py/main/examples/titanic.csv"
+df = pd.read_csv(url)
+X = df[["pclass", "sex", "age", "fare", "embarked"]].astype({"pclass": "category"})
+y = df["survived"].map({0: "died", 1: "survived"})
+X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.3, random_state=0)
 
-# Inspect the tree
-clf.print_tree(feature_names=features, class_names=["No", "Yes"])
+# no one-hot encoding, no imputation: sex, embarked and pclass are used as
+# categories, and the missing ages are handled by the tree
+clf = C5Classifier(min_samples_leaf=10).fit(X_tr, y_tr)
+print(f"test accuracy: {clf.score(X_te, y_te):.3f}")      # 0.794
 
-# Extract rules for each sample
-rules = clf.predict_rule(X, feature_names=features)
-print(rules[:5])
+for rule in clf.export_rules():
+    print(rule)
+# sex IN {male} => died
+# sex NOT IN {male} AND pclass IN {3} AND fare <= 23.3500 => survived
+# sex NOT IN {male} AND pclass IN {3} AND fare > 23.3500 => died
+# sex NOT IN {male} AND pclass NOT IN {3} => survived
 
-# Draw it exactly like sklearn.tree.plot_tree
-clf.plot_tree(feature_names=features, class_names=["No", "Yes"], filled=True)
-
-# Export as Graphviz
-path = clf.export_graphviz(
-    "titanic_tree",
-    feature_names=features,
-    class_names=["No", "Yes"],
-    format="dot"  # save a .dot file directly
-)
-print(f"DOT file written to {path}")
+clf.plot_tree(filled=True, rounded=True)   # same look and options as sklearn.tree.plot_tree
 ```
 
-## Quickstart – Regression (Diabetes)
+## A scikit-learn estimator
 
-Fit a regression tree to the diabetes dataset and obtain a visualisation:
+`C5Classifier` and `C5Regressor` pass scikit-learn's `check_estimator`, so they
+work with `clone`, `Pipeline`, `cross_val_score`, `GridSearchCV` and the rest
+of the ecosystem:
 
 ```python
-import pandas as pd
-from time import perf_counter
-from c50py import C5Regressor
+from sklearn.model_selection import GridSearchCV
 
-df = pd.read_csv("diabetes.csv")
-y = df["target"].values
-X_df = df.drop(columns=["target"])
-X = X_df.values.astype(object)
-features = list(X_df.columns)
-
-reg = C5Regressor(
-    min_samples_split=30,
-    min_samples_leaf=10,
-    pruning=True, cf=0.25, global_pruning=True,
-    feature_names=features,
-    random_state=42,
-    infer_categorical=False, int_as_categorical=False,
-    numeric_threshold_strategy="quantile", max_numeric_thresholds=64
-)
-
-start = perf_counter(); reg.fit(X, y); print(f"fit: {perf_counter()-start:.3f}s")
-
-# Export to DOT (Graphviz installed optional)
-dot_path = reg.export_graphviz("diabetes_tree", feature_names=features, format="dot")
-print(f"Tree saved to {dot_path}")
-
-# Export human‑readable rules (single trees only)
-rules = reg.export_rules(feature_names=features)
-print(rules[:3])
+grid = GridSearchCV(C5Classifier(), {"cf": [0.1, 0.25, 0.5], "min_samples_leaf": [1, 5, 20]}, cv=5)
+grid.fit(X_tr, y_tr)
+print(grid.best_params_, grid.score(X_te, y_te))
 ```
 
-## Performance tuning
+## What C5.0 does differently from CART
 
-Several hyperparameters influence model complexity and performance:
+| | scikit-learn CART | c50py (C5.0) |
+|---|---|---|
+| Categorical columns | must be encoded (one-hot, ordinal) | split natively: `sector in {a, b, c}` |
+| Missing values | imputed, or one learned direction | cases go down both branches with fractional weights, as in C4.5/C5.0 |
+| Split criterion | Gini or entropy | gain ratio, among splits with at least average gain, with C4.5's MDL penalty for numeric thresholds |
+| Pruning | cost-complexity (`ccp_alpha`) | pessimistic error pruning with confidence factor `cf` (C4.5's `AddErrs`) |
+| Boosting | separate `AdaBoostClassifier` | built in: `trials=10` |
 
-- **`numeric_threshold_strategy`** (`'quantile'` | `'all'`): subsample candidate numeric
-  thresholds.  With `'quantile'` the number of splits considered is limited to
-  `max_numeric_thresholds` per feature per node.  `'all'` evaluates every unique
-  midpoint (slower on large datasets).
-- **`max_numeric_thresholds`**: number of candidate thresholds when using
-  `'quantile'` (typically 32–64).
-- **`categorical_features`**: list of names or indices marking categorical columns.
-- **`max_categories_exhaustive`**: maximum cardinality for exhaustive subset search on
-  categorical features; beyond this a simpler one‑vs‑rest strategy is used.
-- **`infer_categorical`/`int_as_categorical`**: enable automatic detection of
-  categorical/boolean/integer columns when dtype information is not explicit.
-- **`max_depth`**: optional depth limit for extremely noisy or deep trees.
+## Main features
 
-When boosting (`trials > 1`) the same hyperparameters apply to each base tree.
+- **Classification and regression**: `C5Classifier`, `C5Regressor`.
+- **Categorical columns detected automatically**: pandas `category`, `object`,
+  `string` and `bool` columns, or object columns holding strings. You can also
+  list them with `categorical_features=["region", 3]` (names or indices).
+- **Missing values** (`None`, `np.nan`, `pd.NA`) in training and prediction.
+- **Case weights** through `sample_weight`.
+- **Boosting** with `trials > 1`.
+- **Readable output**: `export_rules()` (one rule per leaf), `predict_rule(X)`
+  (the rule each case follows) and `print_tree()`.
+- **Drawings identical to scikit-learn**: `plot_tree`, `export_graphviz` and
+  `export_text`, with the same parameters. Boxes use c50py's own palette so a
+  C5.0 tree is easy to tell apart from a CART tree (`palette="sklearn"` gives
+  scikit-learn's colours).
+
+## Regression
+
+```python
+from sklearn.datasets import load_diabetes
+from c50py import C5Regressor
+
+X, y = load_diabetes(return_X_y=True, as_frame=True)
+reg = C5Regressor(min_samples_leaf=20).fit(X, y)
+print(reg.export_rules()[:3])
+```
+
+## Key parameters
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `cf` | `0.25` | Confidence factor for pruning; smaller values prune more. |
+| `min_samples_leaf` | `1` (classifier), `2` (regressor) | Minimum (weighted) cases in each child. |
+| `trials` | `1` | Number of boosted trees (classifier). |
+| `categorical_features` | `None` | Extra columns to treat as categorical, by name or index. |
+| `infer_categorical` | `True` | Detect categorical columns from their dtype or content. |
+| `max_categories_exhaustive` | `12` | Up to this many categories every binary subset is evaluated. |
+| `max_depth` | `None` | Optional depth limit. |
+
+The [Usage Guide](USAGE_GUIDE.md) covers every option.
+
+## How close is it to Quinlan's C5.0?
+
+`c50py` is a from-scratch Python implementation that follows C4.5/C5.0 in the
+split criterion, the handling of missing values and the pessimistic pruning.
+Some parts of the original are not (yet) implemented:
+
+- splits are binary; categorical splits group categories into two subsets
+  (C5.0's default is one branch per category, with subset grouping as an option);
+- no **winnowing** (C5.0's built-in feature selection);
+- no **rulesets**: `export_rules()` returns the rules of the tree, one per leaf,
+  not C5.0's simplified, independent rules;
+- boosting follows AdaBoost.M1/SAMME reweighting, close to but not identical
+  with C5.0's;
+- no misclassification costs.
+
+Rulesets and winnowing are on the roadmap. Contributions are welcome.
+
+## Citation
+
+If you use `c50py` in research, please cite it (a JOSS submission is in
+preparation; meanwhile cite the repository):
+
+```bibtex
+@software{diaz_solis_c50py,
+  author = {D{\'i}az Sol{\'i}s, David},
+  title  = {c50py: C5.0 decision trees for Python},
+  url    = {https://github.com/daviddiazsolis/c50py},
+  year   = {2026}
+}
+```
+
+## Contributing and license
+
+Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md)
+and the [CHANGELOG](CHANGELOG.md). `c50py` is released under the MIT License.
+The drawing code is adapted from scikit-learn (BSD-3-Clause).

@@ -36,7 +36,6 @@ We appreciate suggestions for new features or improvements. Please open an issue
     ```bash
     pip install -e .[dev]
     ```
-    (Note: `[dev]` assumes you have defined optional dependencies for development in `pyproject.toml`. If not, just `pip install -e .` and install `pytest` separately.)
 
 3.  Run tests:
     ```bash

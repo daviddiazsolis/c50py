@@ -39,6 +39,8 @@ from __future__ import annotations
 import numpy as np
 from ._export import _TreeExportMixin
 from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.utils.multiclass import check_classification_targets
+from . import _validation as _v
 from collections import Counter
 from itertools import combinations
 
@@ -182,7 +184,7 @@ class TreeNode:
 # -----------------------------------------------------------------------------
 # Classifier
 # -----------------------------------------------------------------------------
-class C5Classifier(_TreeExportMixin, BaseEstimator, ClassifierMixin):
+class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
     """
     Decision tree classifier inspired by Quinlan's C5.0.
 
@@ -213,39 +215,46 @@ class C5Classifier(_TreeExportMixin, BaseEstimator, ClassifierMixin):
         Whether to perform pessimistic post‑pruning.  If ``False``,
         ``cf`` and ``global_pruning`` are ignored.
     cf : float, default=0.25
-        Confidence factor for pessimistic pruning.  Smaller values produce
-        larger trees; larger values prune more aggressively.
-    global_pruning : bool, default=True
-        Apply a secondary global merge step after local pruning.
+        Confidence factor for pessimistic pruning, as in C4.5/C5.0.  Smaller
+        values prune more (cf=0.25 is the original default).
+    global_pruning : bool, default=False
+        Apply a second, top-down pruning pass after local pruning.  With
+        C4.5's ``AddErrs`` it rarely changes the tree.
     random_state : int or None, default=None
-        Random seed used for boosting.  Ignored when ``trials=1``.
+        Kept for API compatibility; boosting reweights cases and is
+        deterministic.
     feature_names : list[str] or None, default=None
-        Optional list of feature names used for rule/graph exports.  If
-        ``categorical_features`` are specified by name then ``feature_names``
-        must also be provided.
-    categorical_features : list[int|str] or None, default=None
-        Indices or names of categorical input features.  If names are used
-        ``feature_names`` must be provided.  All other features are treated as
-        numeric.
-    infer_categorical : bool, default=False
-        If ``True``, attempt to infer categorical features based on dtype.
-        When dtype information is correct it is recommended to leave this
-        disabled and specify categorical columns explicitly.
+        Names for the columns, used in rules and drawings.  When ``None`` the
+        DataFrame column names are used (or ``f0, f1, ...``).  The names
+        actually used are stored in ``feature_names_`` after ``fit``.
+    categorical_features : list[int | str] or None, default=None
+        Indices or names of categorical columns.  Names refer to
+        ``feature_names`` or the DataFrame columns.
+    infer_categorical : bool, default=True
+        Also treat as categorical every pandas ``category``, ``object``,
+        ``string`` or ``bool`` column, and every object column holding strings
+        or booleans.  With ``False`` only ``categorical_features`` are
+        categorical.
     int_as_categorical : bool, default=False
-        Whether to treat integer columns as categorical when cardinality is
-        manageable.  Only used when ``infer_categorical=True``.
+        With ``infer_categorical=True``, treat integer columns as categorical
+        too.
     max_categories_exhaustive : int, default=12
-        Maximum cardinality for exhaustive subset search on categorical
-        features.  Above this value a simpler one‑vs‑rest strategy is used.
-    numeric_threshold_strategy : str, default="quantile"
-        Strategy used to subsample candidate thresholds for numeric features.
-        Currently only ``"quantile"`` is supported.
+        Up to this many categories (the most frequent ones) all binary subsets
+        are evaluated; rarer categories always go to the complement.
+    numeric_threshold_strategy : {"all", "quantile"}, default="all"
+        ``"all"`` evaluates every midpoint between distinct values (vectorised,
+        as in C4.5); ``"quantile"`` evaluates at most ``max_numeric_thresholds``
+        evenly spaced candidates.
     max_numeric_thresholds : int, default=32
-        When ``numeric_threshold_strategy="quantile"`` the number of candidate
-        thresholds per feature is capped at this value.
+        Number of candidates when ``numeric_threshold_strategy="quantile"``.
     max_depth : int or None, default=None
-        Maximum depth of the tree.  If ``None`` the depth is unbounded.
-        Limiting the depth can help prevent excessive recursion on noisy data.
+        Maximum depth of the tree.  ``None`` means unbounded.
+    mdl_penalty : bool, default=True
+        Charge continuous attributes the MDL penalty of C4.5 Release 8,
+        ``log2(number of thresholds) / n_known``.
+    gain_ratio_avg_gain : bool, default=True
+        As in C4.5, only splits whose information gain is at least the average
+        gain compete by gain ratio.
     verbose : int, default=0
         Verbosity level.  Currently unused.
 
@@ -265,117 +274,93 @@ class C5Classifier(_TreeExportMixin, BaseEstimator, ClassifierMixin):
     def __init__(
         self,
         *,
-        trials: int = 1,
-        min_samples_split: int = 2,
-        min_samples_leaf: int = 1,
-        pruning: bool = True,
-        cf: float = 0.25,
-        global_pruning: bool = False,
-        random_state: int | None = None,
-        feature_names: list[str] | None = None,
-        categorical_features: list[int | str] | None = None,
-        infer_categorical: bool = False,
-        int_as_categorical: bool = False,
-        max_categories_exhaustive: int = 12,
-        numeric_threshold_strategy: str = "all",
-        max_numeric_thresholds: int = 32,
-        max_depth: int | None = None,
-        mdl_penalty: bool = True,
-        gain_ratio_avg_gain: bool = True,
-        verbose: int = 0,
+        trials=1,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        pruning=True,
+        cf=0.25,
+        global_pruning=False,
+        random_state=None,
+        feature_names=None,
+        categorical_features=None,
+        infer_categorical=True,
+        int_as_categorical=False,
+        max_categories_exhaustive=12,
+        numeric_threshold_strategy="all",
+        max_numeric_thresholds=32,
+        max_depth=None,
+        mdl_penalty=True,
+        gain_ratio_avg_gain=True,
+        verbose=0,
     ):
-        """Clean C5.0-style classifier (Quinlan-inspired)."""
-        self.mdl_penalty = bool(mdl_penalty)
-        self.gain_ratio_avg_gain = bool(gain_ratio_avg_gain)
-        self.trials = int(trials)
-        self.min_samples_split = int(min_samples_split)
-        self.min_samples_leaf = int(min_samples_leaf)
-        self.pruning = bool(pruning)
-        self.cf = float(cf)
-        self.global_pruning = bool(global_pruning)
+        # scikit-learn convention: store the parameters exactly as given
+        # (no conversion, no validation, no fitted attributes) so that
+        # get_params / set_params / clone work.
+        self.trials = trials
+        self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
+        self.pruning = pruning
+        self.cf = cf
+        self.global_pruning = global_pruning
         self.random_state = random_state
-
-        self.feature_names_ = feature_names
+        self.feature_names = feature_names
         self.categorical_features = categorical_features
-        self.infer_categorical = bool(infer_categorical)
-        self.int_as_categorical = bool(int_as_categorical)
-        self.max_categories_exhaustive = int(max_categories_exhaustive)
-
-        self.numeric_threshold_strategy = str(numeric_threshold_strategy)
-        self.max_numeric_thresholds = int(max_numeric_thresholds)
+        self.infer_categorical = infer_categorical
+        self.int_as_categorical = int_as_categorical
+        self.max_categories_exhaustive = max_categories_exhaustive
+        self.numeric_threshold_strategy = numeric_threshold_strategy
+        self.max_numeric_thresholds = max_numeric_thresholds
         self.max_depth = max_depth
-        self.verbose = int(verbose)
+        self.mdl_penalty = mdl_penalty
+        self.gain_ratio_avg_gain = gain_ratio_avg_gain
+        self.verbose = verbose
 
-        self.tree_ = None
-        self.classes_ = None
-        self.n_features_ = None
+    def __sklearn_tags__(self):
+        tags = super().__sklearn_tags__()
+        tags.input_tags.allow_nan = True
+        return tags
+
+    def _more_tags(self):  # scikit-learn < 1.6
+        return {"allow_nan": True}
 
     def fit(self, X, y, sample_weight=None, feature_names=None):
-        # pandas support: column names become feature names, object/category/bool
-        # columns are treated as categorical when infer_categorical=True
-        df_dtypes = None
-        if hasattr(X, "columns") and hasattr(X, "dtypes"):
-            if feature_names is None and getattr(self, "feature_names_", None) is None:
-                feature_names = [str(c) for c in X.columns]
-            df_dtypes = list(X.dtypes)
-            X = X.to_numpy(dtype=object) if any(str(d) in ("object", "category", "bool", "string") for d in df_dtypes) else X.to_numpy()
-        X = np.asarray(X)
-        if hasattr(y, "to_numpy"):
-            y = y.to_numpy()
-        y = np.asarray(y)
-        if sample_weight is None:
-            w = np.ones(len(y), dtype=float)
-        else:
-            w = np.asarray(sample_weight, dtype=float)
-            if len(w) != len(y):
-                raise ValueError("sample_weight must have the same length as y")
+        """
+        Build the tree (``trials=1``) or the boosted ensemble (``trials > 1``).
 
-        # Map categorical feature names to indices
-        n_features = X.shape[1]
-        if feature_names is not None:
-             if len(feature_names) != n_features:
-                 raise ValueError("feature_names length must match X.shape[1]")
-             self.feature_names_ = list(feature_names)
-        elif self.feature_names_ is None:
-            self.feature_names_ = [f"f{i}" for i in range(n_features)]
-        cf = self.categorical_features
-        if cf is not None:
-            if len(cf) and isinstance(cf[0], str):
-                name_to_idx = {n:i for i,n in enumerate(self.feature_names_)}
-                self.categorical_features_ = [name_to_idx[n] for n in cf]
-            else:
-                self.categorical_features_ = list(map(int, cf))
-        else:
-            self.categorical_features_ = []
-        # --- determine categorical mask strictly from categorical_features ---
+        Parameters
+        ----------
+        X : array-like or pandas DataFrame of shape (n_samples, n_features)
+            Training data. Numeric, categorical (strings, pandas ``category``,
+            booleans) and missing values (``None``, ``np.nan``, ``pd.NA``) are
+            accepted. With a DataFrame the column names become feature names
+            and ``category``/``object``/``string``/``bool`` columns are treated
+            as categorical (``infer_categorical=True``, the default).
+        y : array-like of shape (n_samples,)
+            Class labels (integers or strings).
+        sample_weight : array-like of shape (n_samples,), optional
+            Non-negative case weights.
+        feature_names : list of str, optional
+            Names for the columns; overrides ``self.feature_names`` and the
+            DataFrame column names.
+        """
+        X, y, dtypes = _v.validate_fit(self, X, y, y_numeric=False)
+        check_classification_targets(y)
+        w = _v.sample_weights(sample_weight, X)
         n_features = X.shape[1]
         self.n_features_ = n_features
-        cats = set()
-        if getattr(self, 'categorical_features', None) is not None:
-            cf = list(self.categorical_features)
-            if len(cf) and isinstance(cf[0], str):
-                if getattr(self, 'feature_names_', None) is None:
-                    raise ValueError('feature_names must be provided when using categorical_features by name')
-                name_to_idx = {n:i for i,n in enumerate(self.feature_names_)}
-                cf = [name_to_idx[c] for c in cf]
-            cats = set(int(i) for i in cf)
-        if self.infer_categorical:
-            for j in range(n_features):
-                if j in cats:
-                    continue
-                col = X[:, j]
-                if df_dtypes is not None and str(df_dtypes[j]) in ("object", "category", "bool", "string"):
-                    cats.add(j); continue
-                if col.dtype == object:
-                    vals_known = [v for v in col if not _isnan_scalar(v)]
-                    if any(isinstance(v, (str, bool, np.bool_)) for v in vals_known):
-                        cats.add(j)
-                elif self.int_as_categorical and col.dtype.kind in "iu":
-                    cats.add(j)
-        self.categorical_features_ = sorted(cats)
-        self.is_cat_ = [ (i in cats) for i in range(n_features) ]
-        
+        self.feature_names_ = _v.resolve_feature_names(self, feature_names, n_features)
+        mask = _v.categorical_mask(self, X, dtypes, self.feature_names_)
+        self.categorical_features_ = [int(j) for j in np.flatnonzero(mask)]
+        self.is_cat_ = [bool(b) for b in mask]
+        self.tree_ = None
+        self.ensemble_, self.alphas_ = [], []
+
         self.classes_ = np.unique(y)
+        # cases with zero weight do not exist for C5.0 (they would only move
+        # the candidate thresholds), so they are dropped before growing
+        keep = w > 0
+        if not keep.all():
+            X, y, w = X[keep], y[keep], w[keep]
         if self.trials == 1:
             # build a single tree and record its depth
             self.tree_ = self._build_tree(X, y, w, depth=0)
@@ -412,17 +397,8 @@ class C5Classifier(_TreeExportMixin, BaseEstimator, ClassifierMixin):
         ValueError
             If the estimator has not been fitted.
         """
-        # Check that the model is fitted.  For a single tree the ``tree_``
-        # attribute is created in fit; for an ensemble ``ensemble_`` and
-        # ``alphas_`` are created.
-        if self.trials == 1:
-            if getattr(self, 'tree_', None) is None:
-                raise ValueError("Estimator not fitted. Call fit(...) first.")
-        else:
-            if not getattr(self, 'ensemble_', None):
-                raise ValueError("Estimator not fitted. Call fit(...) first.")
-        X = np.asarray(X)
-        if self.trials == 1:
+        X = _v.validate_predict(self, X)
+        if not self.ensemble_:
             return np.array([self._predict_instance(x, self.tree_) for x in X])
         proba = self.predict_proba(X)
         return self.classes_[np.argmax(proba, axis=1)]
@@ -452,15 +428,9 @@ class C5Classifier(_TreeExportMixin, BaseEstimator, ClassifierMixin):
         ValueError
             If the estimator has not been fitted.
         """
-        X = np.asarray(X)
-        # Single-tree case: ensure the tree exists
-        if self.trials == 1:
-            if getattr(self, 'tree_', None) is None:
-                raise ValueError("Estimator not fitted. Call fit(...) first.")
+        X = _v.validate_predict(self, X)
+        if not self.ensemble_:
             return np.array([self._predict_proba_instance(x, self.tree_) for x in X])
-        # Ensemble case: ensure the ensemble has been trained
-        if not getattr(self, 'ensemble_', None):
-            raise ValueError("Estimator not fitted. Call fit(...) first.")
         n, k = len(X), len(self.classes_)
         acc = np.zeros((n, k), dtype=float)
         for tree, alpha in zip(self.ensemble_, self.alphas_):
@@ -1067,7 +1037,7 @@ class C5Classifier(_TreeExportMixin, BaseEstimator, ClassifierMixin):
     def _collect_rules(self, node: TreeNode, parts, rules, fn, cn):
         if node.is_leaf:
             body = " AND ".join(parts) if parts else "<root>"
-            pred = cn[node.predicted_class] if cn is not None else str(node.predicted_class)
+            pred = _v.class_name(self, node.predicted_class, cn)
             rules.append(f"{body} => {pred}")
             return
         name = (fn[node.feature_index] if (fn is not None and 0 <= node.feature_index < len(fn))
@@ -1086,7 +1056,7 @@ class C5Classifier(_TreeExportMixin, BaseEstimator, ClassifierMixin):
 
     def _print_node(self, node: TreeNode, indent="", fn=None, cn=None):
         if node.is_leaf:
-            pred = cn[node.predicted_class] if cn is not None else str(node.predicted_class)
+            pred = _v.class_name(self, node.predicted_class, cn)
             print(f"{indent}Predict {pred} | dist={dict(node.class_distribution)}")
             return
         name = (fn[node.feature_index] if (fn is not None and 0 <= node.feature_index < len(fn))
