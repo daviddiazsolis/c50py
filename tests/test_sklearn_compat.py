@@ -8,7 +8,7 @@ from sklearn.model_selection import GridSearchCV, cross_val_score
 from sklearn.pipeline import make_pipeline
 from sklearn.utils.estimator_checks import parametrize_with_checks
 
-from c50py import C5Classifier, C5Regressor
+from c50py import C5Classifier, C5Regressor, C5RulesClassifier
 
 
 _SK = tuple(int(p) for p in sklearn.__version__.split(".")[:2])
@@ -17,7 +17,7 @@ _SK = tuple(int(p) for p in sklearn.__version__.split(".")[:2])
 # The full battery is run on scikit-learn >= 1.6; older test harnesses break
 # with recent joblib even for scikit-learn's own trees (pickle/memmap check).
 @pytest.mark.skipif(_SK < (1, 6), reason="estimator checks run on scikit-learn >= 1.6")
-@parametrize_with_checks([C5Classifier(), C5Regressor()])
+@parametrize_with_checks([C5Classifier(), C5Regressor(), C5RulesClassifier()])
 def test_sklearn_estimator_checks(estimator, check):
     check(estimator)
 

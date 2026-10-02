@@ -95,3 +95,7 @@ dmypy.json
 # Editors
 .vscode/
 .idea/
+
+# benchmark data cache (downloaded from OpenML)
+benchmarks/data/
+benchmarks/results/*.log

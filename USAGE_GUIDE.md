@@ -10,8 +10,8 @@ While scikit-learn's CART implementation is excellent, C5.0 offers distinct adva
 
 1.  **Native Categorical Support**: No need for One-Hot Encoding. Splits are based on subsets of categories (e.g., `{A, B} vs {C, D}`), leading to simpler, more interpretable trees.
 2.  **Robust Missing Value Handling**: Uses fractional case propagation instead of imputation, preserving data integrity.
-3.  **Readable rules**: every leaf can be exported as an if-then rule (`export_rules`). These are the rules of the tree, one per leaf; C5.0's simplified rulesets are not implemented yet.
-4.  **Boosting**: Implements C5.0-style boosting (similar to AdaBoost.M1) for higher accuracy.
+3.  **Readable rules**: the rules of the tree, one per leaf (`export_rules`, `apply_rules`), and C5.0's simplified rulesets (`C5RulesClassifier`).
+4.  **Boosting and winnowing**: C5.0's boosting (`trials=10`) for higher accuracy and C5.0's winnowing (`winnow=True`) to screen out irrelevant columns.
 
 ---
 
@@ -88,20 +88,37 @@ clf = C5Classifier()
 clf.fit(X, y) # Works natively!
 ```
 
-### 3. Rule Extraction & Tracing
+### 3. Rules of the tree and rulesets
 
-You can extract human-readable rules from the tree or trace why a specific prediction was made.
+**Rules of the tree.** Every leaf is a rule, the conjunction of the tests on its path. They are
+mutually exclusive: every case follows exactly one.
 
 ```python
-# Get all rules
-rules = clf.export_rules(feature_names=["Age", "Income"])
-for r in rules:
+for r in clf.export_rules():          # one rule per leaf
     print(r)
 
-# Trace a specific prediction
-trace = clf.predict_rule([X_test[0]], feature_names=["Age", "Income"])
-print(trace[0])
+clf.apply(X_test)                     # leaf number of each row, in export_rules() order
+clf.apply_rules(X_test)               # DataFrame: rule_id, rule, prediction (indexed like X_test)
+clf.predict_rule(X_test)              # the rule text of each row
 ```
+
+**Rulesets.** C5.0's `rules` mode builds a different, smaller model from those rules: tests that do
+not pay for themselves are dropped, a subset of rules is selected by minimum description length, and
+the rules may overlap (when they do, they vote with their confidence). A default class covers the
+cases no rule covers.
+
+```python
+from c50py import C5RulesClassifier
+
+ruleset = C5RulesClassifier().fit(X_train, y_train)    # or: clf.build_ruleset(X_train, y_train)
+for line in ruleset.export_ruleset():                   # rules with cases, errors, confidence, lift
+    print(line)
+ruleset.export_ruleset(as_frame=True)                   # the same as a DataFrame
+ruleset.apply_ruleset(X_test)                           # rule behind each prediction, rules satisfied
+```
+
+`examples/notebooks/04_rules_rulesets_churn_campaigns.ipynb` uses them to split customers at risk of
+leaving by reason and assign a retention campaign to each.
 
 ### 4. Pruning: what `cf` and `min_samples_leaf` do
 
@@ -113,14 +130,24 @@ imbalanced targets it can remove leaves that only refined probabilities without 
 predicted class; if you care about ranking (AUC) rather than accuracy, use `pruning=False` with a
 sensible `min_samples_leaf`, or a smaller `cf`.
 
-### 5. Boosting
+### 5. Boosting and winnowing
 
-Enable boosting by setting `trials > 1`. This creates an ensemble of trees, where each subsequent tree focuses on the errors of the previous ones.
+`trials > 1` grows an ensemble the way C5.0 does: each new tree is grown on the training cases
+reweighted so that the ones the previous trees got wrong count more, the trees vote with the
+confidence of the leaf each case reaches, and boosting stops early when a tree is too accurate or too
+inaccurate to help.
 
 ```python
-# Train a boosted ensemble of 10 trees
-clf_boost = C5Classifier(trials=10)
-clf_boost.fit(X_train, y_train)
+clf_boost = C5Classifier(trials=10).fit(X_train, y_train)
+len(clf_boost.ensemble_), clf_boost.estimator_errors_
+```
+
+`winnow=True` screens the columns before the final tree is grown: a trial tree on half of the data
+drops the columns it never uses and those whose removal lowers its errors on the other half.
+
+```python
+clf_w = C5Classifier(winnow=True).fit(X_train, y_train)
+clf_w.winnowed_features_            # the columns that were dropped
 ```
 
 ### 6. Drawing trees, exactly like scikit-learn

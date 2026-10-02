@@ -8,7 +8,8 @@ def test_sample_weights():
     y = np.array([0, 0, 1])
     w = np.array([1, 2, 1]) # Effective counts: Class 0: 3, Class 1: 1
     
-    clf = C5Classifier(min_samples_split=2, trials=1, random_state=42)
+    # toy data: allow leaves with a single case (C5.0's default minCases is 2)
+    clf = C5Classifier(min_samples_split=2, min_samples_leaf=1, trials=1, random_state=42)
     clf.fit(X, y, sample_weight=w)
     
     # Check class distribution in root
@@ -56,7 +57,8 @@ def test_boosting_weights():
     # Stump 2: Focus on 3 (x=3, y=0). Split x > 2.5?
     # Con 4 casos, la poda pesimista de C4.5 y la penalizacion MDL dejan el arbol en una hoja;
     # para probar el mecanismo de boosting se desactivan (son datos de juguete).
-    clf = C5Classifier(trials=10, max_depth=1, random_state=42, pruning=False, mdl_penalty=False)
+    clf = C5Classifier(trials=10, max_depth=1, random_state=42, pruning=False, mdl_penalty=False,
+                       min_samples_leaf=1)
     clf.fit(X, y)
     
     assert clf.score(X, y) == 1.0

@@ -43,6 +43,7 @@ from sklearn.utils.multiclass import check_classification_targets
 from . import _validation as _v
 from collections import Counter
 from itertools import combinations
+from functools import lru_cache
 
 
 # -----------------------------------------------------------------------------
@@ -70,6 +71,22 @@ def _gain_ratio(parent: np.ndarray, children: list[np.ndarray]) -> float:
     g = _entropy(parent) - sum(d.sum()/max(parent.sum(), 1e-12) * _entropy(d) for d in children)
     s = _split_info(children)
     return float(g / s) if s > 0 else 0.0
+
+@lru_cache(maxsize=None)
+def _subset_masks(n: int) -> np.ndarray:
+    """0/1 matrix with one row per binary partition of ``n`` categories
+    (each partition once: subsets of size <= n/2, and for even splits only
+    those that contain category 0)."""
+    rows = []
+    for r in range(1, n // 2 + 1):
+        for sub in combinations(range(n), r):
+            if r * 2 == n and 0 not in sub:
+                continue
+            m = np.zeros(n)
+            m[list(sub)] = 1.0
+            rows.append(m)
+    return np.array(rows).reshape(-1, n)
+
 
 def _coeff_from_cf(cf: float) -> float:
     """
@@ -201,25 +218,39 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
     Parameters
     ----------
     trials : int, default=1
-        Number of trees in the ensemble.  A value of 1 fits a single tree.
-        Values greater than 1 enable AdaBoost.M1 boosting.  Rule tracing,
+        Number of boosting trials.  1 fits a single tree; larger values
+        enable C5.0's boosting (see ``_fit_boosting``), which may stop early
+        and keep fewer trees (``len(ensemble_)``).  Rule tracing,
         pretty printing, rule export and Graphviz export are only available
         when ``trials=1``.
     min_samples_split : int, default=2
         Minimum number of training samples required to allow a split.  Using
         very small values can lead to extremely deep trees; consider setting
         ``max_depth`` or increasing this value for large datasets.
-    min_samples_leaf : int, default=1
-        Minimum number of samples required in each child after a split.
+    min_samples_leaf : int, default=2
+        Minimum (weighted) number of cases in each child of a split; C5.0's
+        ``minCases`` (default 2).
+    numeric_min_split : bool, default=True
+        As in C4.5/C5.0, a numeric cut must also leave at least
+        ``min(25, 10% of the known cases per class)`` cases on each side, so
+        large nodes do not split off a handful of cases.
+    winnow : bool, default=False
+        C5.0's winnowing: before growing the tree, drop columns that a trial
+        tree on half of the data never uses or that make its errors on the
+        other half worse.  The dropped columns are in ``winnowed_features_``.
+    subtree_raising : bool, default=True
+        As in C4.5/C5.0, pruning may replace a subtree by its largest branch
+        when that lowers the pessimistic error (single trees only).
     pruning : bool, default=True
         Whether to perform pessimistic post‑pruning.  If ``False``,
         ``cf`` and ``global_pruning`` are ignored.
     cf : float, default=0.25
         Confidence factor for pessimistic pruning, as in C4.5/C5.0.  Smaller
         values prune more (cf=0.25 is the original default).
-    global_pruning : bool, default=False
-        Apply a second, top-down pruning pass after local pruning.  With
-        C4.5's ``AddErrs`` it rarely changes the tree.
+    global_pruning : bool, default=True
+        C5.0's second, global pruning pass: cost-complexity pruning that may
+        add up to one standard error of training errors (C5.0's default; R's
+        ``noGlobalPruning=FALSE``).
     random_state : int or None, default=None
         Kept for API compatibility; boosting reweights cases and is
         deterministic.
@@ -276,10 +307,10 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
         *,
         trials=1,
         min_samples_split=2,
-        min_samples_leaf=1,
+        min_samples_leaf=2,
         pruning=True,
         cf=0.25,
-        global_pruning=False,
+        global_pruning=True,
         random_state=None,
         feature_names=None,
         categorical_features=None,
@@ -291,6 +322,9 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
         max_depth=None,
         mdl_penalty=True,
         gain_ratio_avg_gain=True,
+        numeric_min_split=True,
+        subtree_raising=True,
+        winnow=False,
         verbose=0,
     ):
         # scikit-learn convention: store the parameters exactly as given
@@ -313,6 +347,9 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
         self.max_depth = max_depth
         self.mdl_penalty = mdl_penalty
         self.gain_ratio_avg_gain = gain_ratio_avg_gain
+        self.numeric_min_split = numeric_min_split
+        self.subtree_raising = subtree_raising
+        self.winnow = winnow
         self.verbose = verbose
 
     def __sklearn_tags__(self):
@@ -361,16 +398,96 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
         keep = w > 0
         if not keep.all():
             X, y, w = X[keep], y[keep], w[keep]
+        self.winnowed_features_ = []
+        if self.winnow and X.shape[1] > 1:
+            removed = self._winnow(X, y, w)
+            self.winnowed_features_ = [self.feature_names_[j] for j in removed]
+            if removed:
+                X = self._blank_columns(X, removed)   # never tested again
         if self.trials == 1:
             # build a single tree and record its depth
             self.tree_ = self._build_tree(X, y, w, depth=0)
             if self.pruning:
-                self._prune_local(self.tree_)
+                if self.subtree_raising:
+                    self._prune_raise(self.tree_, X, y, w)
+                else:
+                    self._prune_local(self.tree_)
                 if self.global_pruning:
                     self._prune_global(self.tree_)
         else:
             self._fit_boosting(X, y, w)
         return self
+
+    # ------------------------------------------------------------------
+    # Winnowing (C5.0's attribute selection)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _blank_columns(X, cols):
+        """Copy of ``X`` with the given columns set to missing (a column with no
+        known values is never chosen for a split)."""
+        X = np.array(X, dtype=object if X.dtype == object else float, copy=True)
+        X[:, list(cols)] = np.nan
+        return X
+
+    def _winnow(self, X, y, w) -> list:
+        """
+        C5.0's winnowing.  Split the cases into two halves with the same class
+        frequencies (cases of each class alternate between the halves), grow
+        and prune a trial tree on the first half, and measure its errors on the
+        second.  An attribute is dropped if the trial tree never splits on it,
+        or if treating it as unknown makes the errors on the second half
+        *decrease*.  If dropping the latter makes a new trial tree worse on the
+        second half, they are all kept.  Returns the indices of the dropped
+        columns.
+        """
+        first = np.zeros(len(y), dtype=bool)
+        upper = {}
+        for i, c in enumerate(y):
+            first[i] = not upper.get(c, False)
+            upper[c] = not upper.get(c, False)
+        second = ~first
+        if first.sum() < 2 or second.sum() < 1:
+            return []
+        params = self.get_params()
+        params.update(winnow=False, trials=1, pruning=False,
+                      min_samples_leaf=max(self.min_samples_leaf / 2, 2),
+                      categorical_features=list(self.categorical_features_), infer_categorical=False,
+                      feature_names=list(self.feature_names_))
+
+        def trial(Xt):
+            t = C5Classifier(**params).fit(Xt[first], y[first], sample_weight=w[first])
+            used_unpruned = self._tree_features(t.tree_)
+            if self.pruning:
+                t._prune_raise(t.tree_, Xt[first], y[first], w[first]) if self.subtree_raising \
+                    else t._prune_local(t.tree_)
+                if self.global_pruning:
+                    t._prune_global(t.tree_)
+            return t, used_unpruned
+
+        def errors(t, Xs):
+            return float(w[second][t.predict(Xs) != y[second]].sum())
+
+        t, split = trial(X)
+        base = errors(t, X[second])
+        used = self._tree_features(t.tree_)
+        harmful = [j for j in sorted(used)
+                   if errors(t, self._blank_columns(X[second], [j])) < base]
+        if harmful:
+            t2, _ = trial(self._blank_columns(X, harmful))
+            if errors(t2, self._blank_columns(X[second], harmful)) > base:
+                harmful = []
+        never = [j for j in range(X.shape[1]) if j not in split]
+        return sorted(set(harmful) | set(never))
+
+    @staticmethod
+    def _tree_features(node) -> set:
+        out, stack = set(), [node]
+        while stack:
+            n = stack.pop()
+            if not n.is_leaf:
+                out.add(n.feature_index)
+                stack.extend(n.children.values())
+        return out
 
     def predict(self, X):
         """
@@ -433,8 +550,8 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
             return np.array([self._predict_proba_instance(x, self.tree_) for x in X])
         n, k = len(X), len(self.classes_)
         acc = np.zeros((n, k), dtype=float)
-        for tree, alpha in zip(self.ensemble_, self.alphas_):
-            acc += alpha * np.array([self._predict_proba_instance(x, tree) for x in X])
+        for tree in self.ensemble_:
+            acc += np.array([self._predict_proba_instance(x, tree) for x in X])
         # Normalise to probability simplex
         row_sum = acc.sum(axis=1, keepdims=True)
         row_sum[row_sum == 0] = 1.0
@@ -470,9 +587,79 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
             raise ValueError("predict_rule only available when trials=1")
         if getattr(self, 'tree_', None) is None:
             raise ValueError("Estimator not fitted. Call fit(...) first.")
-        Xp = np.asarray(X, dtype=object)
+        Xp = np.asarray(_v.validate_predict(self, X), dtype=object)
         fn = self._maybe_feature_names(feature_names)
         return [self._trace_rule(x, self.tree_, fn) for x in Xp]
+
+    def apply(self, X):
+        """
+        Index of the leaf (= rule of the tree) each row falls in, as
+        scikit-learn's ``apply``.  The index is the position of the rule in
+        :meth:`export_rules`.  A row with a missing value on a tested column
+        follows the branch that held more training cases.  Single trees only.
+        """
+        if self.trials != 1:
+            raise ValueError("apply is only available when trials=1")
+        X = _v.validate_predict(self, X)
+        leaf_id, counter = {}, [0]
+
+        def number(node):
+            if node.is_leaf:
+                leaf_id[id(node)] = counter[0]
+                counter[0] += 1
+            else:
+                number(node.children["left"])
+                number(node.children["right"])
+        number(self.tree_)
+        out = np.empty(X.shape[0], dtype=int)
+        for i, x in enumerate(X):
+            node = self.tree_
+            while not node.is_leaf:
+                v = x[node.feature_index]
+                if _isnan_scalar(v):
+                    pl, pr = node.branch_weights if node.branch_weights is not None else (0.5, 0.5)
+                    go_left = pl >= pr
+                elif node.split_type == "numeric":
+                    go_left = float(v) <= node.threshold
+                else:
+                    go_left = v in node.threshold
+                node = node.children["left" if go_left else "right"]
+            out[i] = leaf_id[id(node)]
+        return out
+
+    def apply_rules(self, X, *, feature_names=None, class_names=None):
+        """
+        The rule of the tree that each row follows, as a DataFrame with
+        ``rule_id`` (position in :meth:`export_rules`), ``rule`` (its tests)
+        and ``prediction``, indexed like ``X`` when it is a DataFrame.  Rules
+        of the tree are mutually exclusive: every row follows exactly one.
+        Single trees only.
+        """
+        import pandas as pd
+        index = X.index if hasattr(X, "index") and hasattr(X, "columns") else None
+        ids = self.apply(X)
+        rules = self.export_rules(feature_names=feature_names, class_names=class_names)
+        body = [r.rsplit(" => ", 1) for r in rules]
+        return pd.DataFrame({"rule_id": ids,
+                             "rule": [body[i][0] for i in ids],
+                             "prediction": [body[i][1] for i in ids]}, index=index)
+
+    def build_ruleset(self, X, y, sample_weight=None):
+        """
+        Build a C5.0-style ruleset from this fitted tree (see
+        :class:`c50py.C5RulesClassifier`): its rules are generalised and
+        selected on the training data ``X, y``.  Returns a fitted
+        ``C5RulesClassifier`` that predicts with the rules.
+        """
+        from .rules import C5RulesClassifier
+        if self.trials != 1:
+            raise ValueError("build_ruleset is only available when trials=1")
+        params = {k: v for k, v in self.get_params().items()
+                  if k in C5RulesClassifier().get_params()}
+        rs = C5RulesClassifier(**params)
+        Xa, ya, _ = _v.validate_fit(rs, X, y, y_numeric=False)
+        w = _v.sample_weights(sample_weight, Xa)
+        return rs._set_from_tree(self, Xa, ya, w)
 
     def export_rules(self, *, feature_names=None, class_names=None):
         """
@@ -532,83 +719,47 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
 
 
     def _fit_boosting(self, X, y, w):
-        # C5.0 boosting: reweighting, not resampling?
-        # Actually C5.0 uses a mix, but standard Adaboost uses reweighting.
-        # The previous implementation used resampling.
-        # Let's switch to reweighting now that we support weights.
-        
-        n = len(y)
-        # Normalize weights to sum to n? Or keep them as is?
-        # Adaboost usually normalizes to sum to 1, but we can scale.
-        # Let's keep the input weights as the starting point.
-        curr_w = w.copy()
-        
-        self.ensemble_, self.alphas_ = [], []
-        eps = 1e-10
-        
-        # Number of classes
-        K = len(self.classes_)
+        """
+        Boosting as in C5.0 (``construct.c``), not AdaBoost.
 
-        for _ in range(self.trials):
-            # Fit tree with current weights
-            tree = self._build_tree(X, y, curr_w, depth=0)
+        Each trial grows and prunes a tree on the current case weights.  Then
+        the total weight of the misclassified cases is moved halfway towards
+        half of the total weight: a constant is *added* to the weight of every
+        misclassified case and the weights of the correct ones are scaled
+        down, and all weights are renormalised to sum to the number of cases.
+        Boosting stops early when a tree makes (almost) no errors, when a tree
+        after the first has no splits, or when its weighted error rate reaches
+        49% (that tree is then discarded).  Trees vote with their class
+        probabilities (C5.0 adds each tree's confidence to the class it
+        predicts); ``estimator_errors_`` keeps each tree's weighted error rate.
+        """
+        n = len(y)
+        cur = w * (n / w.sum())
+        self.ensemble_, self.estimator_errors_ = [], []
+        for t in range(int(self.trials)):
+            tree = self._build_tree(X, y, cur, depth=0)
             if self.pruning:
+                # C5.0 skips subtree raising for boosted trees
                 self._prune_local(tree)
                 if self.global_pruning:
                     self._prune_global(tree)
-            
-            # Predict class (hard prediction)
             pred = np.array([self._predict_instance(x, tree) for x in X])
-            
-            # Calculate error
-            incorrect = (pred != y)
-            err = np.sum(curr_w * incorrect) / np.sum(curr_w)
-            
-            if err <= eps:
-                # A perfect tree on the training data: nothing left to correct.
-                # C5.0 stops boosting here; the tree gets a finite weight so that
-                # predict_proba stays well defined.
-                self.ensemble_.append(tree)
-                self.alphas_.append(0.5 * np.log((1 - eps) / eps))
-                break
-            
-            if err >= 0.5:
-                # Worse than random (for binary), stop or reset?
-                # C5.0 might handle this differently, but for now let's stop
-                if len(self.ensemble_) == 0:
-                     self.ensemble_.append(tree)
-                     self.alphas_.append(1.0)
-                break
-
-            # Calculate alpha (SAMME or Adaboost.M1)
-            # Adaboost.M1: alpha = 0.5 * log((1-err)/err)
-            # SAMME: alpha = log((1-err)/err) + log(K-1)
-            if K > 2:
-                 alpha = np.log((1 - err) / err) + np.log(K - 1)
-            else:
-                 alpha = 0.5 * np.log((1 - err) / err)
-            
-            # Update weights
-            # w <- w * exp(alpha * (pred != y))
-            # But for SAMME/M1 we usually increase weight of incorrect.
-            curr_w *= np.exp(alpha * incorrect)
-            
-            # Normalize
-            curr_w /= curr_w.sum()
-            curr_w *= n # Scale back to sum to n, to keep n_eff reasonable
-            
+            wrong = pred != y
+            err_w, ok_w = float(cur[wrong].sum()), float(cur[~wrong].sum())
+            total = err_w + ok_w
+            if t > 0 and (tree.is_leaf or err_w / total >= 0.49):
+                break                                   # this tree is not kept
             self.ensemble_.append(tree)
-            self.alphas_.append(alpha)
-
-        if len(self.ensemble_) == 0:
-            # Fallback
-            self.tree_ = self._build_tree(X, y, w, depth=0)
-            if self.pruning:
-                self._prune_local(self.tree_)
-                if self.global_pruning:
-                    self._prune_global(self.tree_)
-            self.ensemble_ = [self.tree_]
-            self.alphas_ = [1.0]
+            self.estimator_errors_.append(err_w / total)
+            if err_w < 0.1 or t == int(self.trials) - 1 or err_w / total >= 0.49:
+                break
+            extra = 0.25 * (ok_w - err_w)
+            a = (ok_w - extra) / ok_w
+            b = extra / int(wrong.sum())
+            cur = np.where(wrong, cur + b, cur * a)
+            cur = np.maximum(cur * (n / cur.sum()), 1e-3)
+        # kept for backward compatibility: the trees vote with equal weight
+        self.alphas_ = [1.0] * len(self.ensemble_)
 
     # ------------------------------------------------------------------
     # Predicción
@@ -867,24 +1018,39 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
                 order = np.argsort(-val_w, kind="mergesort")
                 n_cats = min(int(self.max_categories_exhaustive), vals.size)
                 cand_idx = order[:n_cats]
+                # every binary partition of the candidate categories at once:
+                # one row of M per subset (one side), the complement holds the
+                # rest, including categories rarer than the candidates
+                M = _subset_masks(n_cats)
+                left = M @ dists[cand_idx]
+                right = parent_known[None, :] - left
+                swL, swR = left.sum(axis=1), right.sum(axis=1)
+                ok = (swL >= msl) & (swR >= msl)
                 best_local = None
-                # enumerate subsets of the candidate categories (one side), complement = rest incl. rare values
-                for r in range(1, n_cats // 2 + 1):
-                    for sub in combinations(range(n_cats), r):
-                        if r * 2 == n_cats and 0 not in sub:
-                            continue   # avoid evaluating each even partition twice
-                        left = dists[cand_idx[list(sub)]].sum(axis=0)
-                        right = parent_known - left
-                        swL, swR = left.sum(), right.sum()
-                        if swL < msl or swR < msl:
+                if ok.any():
+                    H_children = (swL * entropy_rows(left) + swR * entropy_rows(right)) / w_known_sum
+                    gain = (H_parent - H_children) * frac_known
+                    # as in C4.5, the best split *within* a feature maximises the
+                    # gain; gain ratio is only used to compare features.  Choosing
+                    # the subset by gain ratio would peel off rare categories one
+                    # at a time (tiny split information), a staircase of splits.
+                    i = int(np.argmax(np.where(ok, gain, -np.inf)))
+                    if self.mdl_penalty and M.shape[0] > 1:
+                        # choosing the best of many groupings overstates the gain
+                        # (a multiple-comparison effect).  As C4.5 Release 8 does
+                        # for numeric thresholds, charge log2(number of candidate
+                        # tests) / known cases; for categories that is the number
+                        # of binary groupings evaluated, about k - 1 bits.
+                        gain = gain - np.log2(M.shape[0]) / w_known_sum
+                        if gain[i] <= 0:
                             continue
-                        H_children = (swL * entropy_rows(left[None, :])[0] + swR * entropy_rows(right[None, :])[0]) / w_known_sum
-                        gain = (H_parent - H_children) * frac_known
-                        pL, pR = frac_known * swL / w_known_sum, frac_known * swR / w_known_sum
-                        si = -(pL * np.log2(pL) + pR * np.log2(pR)) + si_miss
-                        gr = gain / si if si > 0 else 0.0
-                        if best_local is None or gr > best_local[1]:
-                            best_local = (gain, gr, j, frozenset(vals[cand_idx[list(sub)]].tolist()), "categorical", swL / (swL + swR), swR / (swL + swR))
+                    pL = frac_known * swL[i] / w_known_sum
+                    pR = frac_known * swR[i] / w_known_sum
+                    si = -(pL * np.log2(pL) + pR * np.log2(pR)) + si_miss
+                    gr = gain[i] / si if si > 0 else 0.0
+                    best_local = (float(gain[i]), float(gr), j,
+                                  frozenset(vals[cand_idx[M[i] > 0]].tolist()), "categorical",
+                                  float(swL[i] / (swL[i] + swR[i])), float(swR[i] / (swL[i] + swR[i])))
                 if best_local is not None:
                     candidates.append(best_local)
             else:
@@ -905,7 +1071,13 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
                 SW = M.cumsum(axis=0)
                 left = SW[bd]; right = parent_known[None, :] - left
                 swL = left.sum(axis=1); swR = right.sum(axis=1)
-                ok = (swL >= msl) & (swR >= msl)
+                # C4.5/C5.0: a numeric cut must leave at least
+                # max(min_samples_leaf, min(25, 10% of the known cases per class))
+                # on each side, so that big nodes do not peel off a handful of cases
+                min_split = msl
+                if self.numeric_min_split:
+                    min_split = max(msl, min(25.0, 0.10 * w_known_sum / K))
+                ok = (swL >= min_split) & (swR >= min_split)
                 if not ok.any():
                     continue
                 H_children = (swL * entropy_rows(left) + swR * entropy_rows(right)) / w_known_sum
@@ -916,9 +1088,10 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
                 with np.errstate(divide="ignore", invalid="ignore"):
                     si = -(pL * np.log2(np.where(pL > 0, pL, 1)) + pR * np.log2(np.where(pR > 0, pR, 1))) + si_miss
                 gr = np.where(si > 0, gain / np.where(si > 0, si, 1), 0.0)
-                gr = np.where(ok, gr, -np.inf)
-                i_best = int(np.argmax(gr))
-                if not np.isfinite(gr[i_best]):
+                # best threshold by gain (C4.5's contin.c), then its gain ratio
+                gain_ok = np.where(ok, gain, -np.inf)
+                i_best = int(np.argmax(gain_ok))
+                if not np.isfinite(gain_ok[i_best]):
                     continue
                 i = bd[i_best]
                 thr = 0.5 * (v[i] + v[i + 1])
@@ -985,24 +1158,171 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
             return leaf_err, N
         return sub_err, N
 
-    def _prune_global(self, node: TreeNode):
-        """
-        Second, top-down pass: after local pruning, check again whether any
-        internal node would be better as a leaf against its *whole* pruned
-        subtree.  With C4.5's AddErrs this rarely changes anything; it is kept
-        as an option (``global_pruning=True``) and is off by default.
-        """
+    # ------------------------------------------------------------------
+    # Pruning with subtree raising (C4.5 / C5.0), using the training cases
+    # ------------------------------------------------------------------
+    def _route(self, node: TreeNode, X, y, w):
+        """Send the cases at ``node`` to its two children; cases with a missing
+        value go down both branches with the weights learnt in training."""
+        vals = X[:, node.feature_index]
+        if vals.dtype.kind == "f":
+            miss = np.isnan(vals)
+        else:
+            miss = np.fromiter((_isnan_scalar(v) for v in vals), count=vals.shape[0], dtype=bool)
+        known = ~miss
+        left = np.zeros(vals.shape[0], dtype=bool)
+        if known.any():
+            if node.split_type == "numeric":
+                left[known] = vals[known].astype(float) <= node.threshold
+            else:
+                left[known] = np.isin(vals[known], list(node.threshold))
+        right = known & ~left
+        pl, pr = node.branch_weights if node.branch_weights is not None else (0.5, 0.5)
+        out = []
+        for mask, p in ((left, pl), (right, pr)):
+            idx = mask | miss
+            ww = w[idx].copy()
+            ww[miss[idx]] *= p
+            out.append((X[idx], y[idx], ww))
+        return out
+
+    def _errs_with_class(self, y, w, cls) -> float:
+        """Pessimistic errors of a leaf predicting ``cls`` for these cases."""
+        N = float(w.sum())
+        if N <= 0:
+            return 0.0
+        E = N - float(w[y == cls].sum())
+        return E + _add_errs(N, E, self.cf)
+
+    def _estimate_errs(self, node: TreeNode, X, y, w) -> float:
+        """Pessimistic errors of the subtree at ``node`` on the given cases,
+        without changing the tree."""
+        if y.shape[0] == 0 or w.sum() <= 0:
+            return 0.0
         if node.is_leaf:
-            return
-        E, N = self._leaf_errors(node)
-        leaf_err = E + _add_errs(N, E, self.cf)
-        sub_err = self._subtree_errors(node)
-        if leaf_err <= sub_err + 0.1:
+            return self._errs_with_class(y, w, node.predicted_class)
+        (Xl, yl, wl), (Xr, yr, wr) = self._route(node, X, y, w)
+        return (self._estimate_errs(node.children["left"], Xl, yl, wl)
+                + self._estimate_errs(node.children["right"], Xr, yr, wr))
+
+    def _prune_raise(self, node: TreeNode, X, y, w) -> float:
+        """
+        Bottom-up pessimistic pruning with subtree raising, as in C4.5/C5.0.
+
+        At every internal node three options are compared by their pessimistic
+        errors (``E + AddErrs``) on the cases that reach the node: keep the
+        subtree, replace it by a leaf, or replace it by its largest branch
+        (*subtree raising*: the branch then receives all the node's cases).
+        The branch must hold at least 10% of the cases and must not test the
+        same numeric attribute; ties within 0.1 errors favour the simpler
+        option, as in the original.  Returns the pessimistic errors.
+        """
+        N = float(w.sum())
+        if N > 0:
+            node.class_distribution = self._class_distribution(y, w)
+            node.predicted_class = max(node.class_distribution, key=node.class_distribution.get)
+        if node.is_leaf:
+            return self._errs_with_class(y, w, node.predicted_class)
+
+        children = [node.children["left"], node.children["right"]]
+        parts = self._route(node, X, y, w)
+        tree_errs = sum(self._prune_raise(ch, *part) for ch, part in zip(children, parts))
+        leaf_errs = self._errs_with_class(y, w, node.predicted_class)
+
+        best = None
+        for ch in children:
+            if ch.is_leaf or sum(ch.class_distribution.values()) < 0.1 * N:
+                continue
+            if ch.split_type == "numeric" and node.split_type == "numeric" and ch.feature_index == node.feature_index:
+                continue
+            if best is None or sum(ch.class_distribution.values()) > sum(best.class_distribution.values()):
+                best = ch
+        best_errs = self._estimate_errs(best, X, y, w) if best is not None else np.inf
+
+        if leaf_errs <= best_errs + 0.1 and leaf_errs <= tree_errs + 0.1:
             node.is_leaf = True
             node.children = {}
-            return
-        for ch in list(node.children.values()):
-            self._prune_global(ch)
+            return leaf_errs
+        if best is not None and best_errs <= tree_errs + 0.1:
+            node.__dict__.update(vars(best))          # raise the branch
+            return self._prune_raise(node, X, y, w)   # its leaves now see all the node's cases
+        return tree_errs
+
+    def _prune_global(self, root: TreeNode):
+        """
+        Second, global pruning pass as in C5.0: cost-complexity pruning with a
+        one-standard-error budget.
+
+        With ``E`` the training errors of the tree and ``N`` the number of
+        cases, the budget is ``sqrt(E * (1 - E / N))``.  Repeatedly, the
+        subtree(s) with the lowest cost complexity, i.e. the fewest extra
+        training errors per leaf removed, are replaced by leaves, while the
+        extra errors fit in what is left of the budget.
+        """
+        def leaf_errs(node):
+            d = node.class_distribution
+            return float(sum(d.values())) - float(d.get(node.predicted_class, 0.0))
+
+        def annotate(node):
+            """(training errors, leaves) of every subtree, stored on the node."""
+            if node.is_leaf:
+                node._errs, node._leaves = leaf_errs(node), 1
+            else:
+                e = n = 0
+                for ch in node.children.values():
+                    ce, cn = annotate(ch)
+                    e, n = e + ce, n + cn
+                node._errs, node._leaves = e, n
+            return node._errs, node._leaves
+
+        base, _ = annotate(root)
+        n_cases = float(sum(root.class_distribution.values()))
+        budget = np.sqrt(max(base * (1.0 - base / n_cases), 0.0)) if n_cases > 0 else 0.0
+
+        while budget > 0:
+            annotate(root)
+            cands = []                      # (cost complexity, extra errors, node, depth)
+
+            def scan(node, depth):
+                if node.is_leaf:
+                    return
+                for ch in node.children.values():
+                    if sum(ch.class_distribution.values()) > 0.1:
+                        scan(ch, depth + 1)
+                extra = leaf_errs(node) - node._errs
+                if extra <= budget:
+                    cands.append((extra / (node._leaves - 1), extra, node, depth))
+
+            scan(root, 0)
+            if not cands:
+                break
+            min_cc = min(c[0] for c in cands)
+            tied = [c for c in cands if c[0] <= min_cc + 1e-12]
+            # a tie inside a tied subtree would be counted twice: keep the outer one
+            chosen, inside = [], set()
+            for cc, extra, node, depth in sorted(tied, key=lambda c: c[3]):
+                if id(node) in inside:
+                    continue
+                chosen.append((extra, node))
+                stack = list(node.children.values())
+                while stack:
+                    x = stack.pop()
+                    inside.add(id(x))
+                    stack.extend(x.children.values())
+            total = sum(e for e, _ in chosen)
+            if total > budget:
+                break
+            for extra, node in chosen:
+                node.is_leaf = True
+                node.children = {}
+                budget -= extra
+
+        def clean(node):
+            for attr in ("_errs", "_leaves"):
+                node.__dict__.pop(attr, None)
+            for ch in node.children.values():
+                clean(ch)
+        clean(root)
 
     def _subtree_errors(self, node: TreeNode) -> float:
         if node.is_leaf:

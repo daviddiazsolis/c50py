@@ -1,5 +1,78 @@
 # Changelog
 
+## 0.5.0
+
+The complete C5.0: rulesets, winnowing and C5.0's boosting join the tree, and the tree is closer to
+C4.5/C5.0. Everything is validated against the original C5.0 (R package `C50`), CART and
+HistGradientBoosting on 23 OpenML datasets (`benchmarks/`). With its defaults the c50py tree has the
+same accuracy as C5.0's (mean difference -0.2 points, Wilcoxon p = 0.31; trees went from 1.55x to
+1.24x C5.0's leaves), rulesets are within 0.5 points of C5.0's (p = 0.07) and boosting matches C5.0's
+boosting (+0.1 points) and HistGradientBoosting (+0.1 points).
+
+Rules and rulesets:
+
+- New `C5RulesClassifier`: C5.0's rulesets (`rules = TRUE` in R). Candidate rules from every node of
+  the pruned tree are simplified with Laplace error rates and description length, a subset is selected
+  by minimum description length, overlapping rules vote with their confidence, and a default class
+  covers the rest. A scikit-learn classifier of its own (`fit`, `predict`, `predict_proba`, pipelines,
+  grid search).
+- `export_ruleset(as_frame=False)` lists the rules with cases, errors, confidence and lift;
+  `apply_ruleset(X)` gives, for each row, the rule behind its prediction, how many rules it satisfies
+  and the prediction (indexed like `X`).
+- `C5Classifier.build_ruleset(X, y)` builds the ruleset from an already fitted tree.
+- Rules of the tree: new `apply(X)` (leaf number in `export_rules()` order, as scikit-learn's `apply`)
+  and `apply_rules(X)` (rule number, text and prediction for each row, indexed like `X`).
+  `predict_rule(X)` now validates its input.
+
+Winnowing:
+
+- `winnow=True`: C5.0's feature selection. A trial tree grown on half of the data screens out the
+  columns it does not use and those whose removal lowers its errors on the other half. The dropped
+  columns are in `winnowed_features_`.
+
+Boosting:
+
+- `trials > 1` now follows C5.0's boosting instead of AdaBoost.M1/SAMME: misclassified cases gain
+  weight additively, trees vote with the confidence of the leaf a case reaches, and boosting stops
+  early when a tree is too accurate or too inaccurate. `alphas_` is kept (all ones) for backward
+  compatibility; `estimator_errors_` holds the weighted error of each tree.
+
+Documentation:
+
+- Five notebooks in `examples/notebooks/`, all runnable in Colab: getting started on mixed data, c50py
+  vs CART, c50py vs gradient boosting, rules and rulesets for churn campaigns, missing values and
+  winnowing.
+- The benchmark now includes the ruleset, winnowing and boosting variants, HistGradientBoosting, and
+  C5.0's rules and boosting, with results by type of data.
+
+Split selection:
+
+- Within a feature the best split is the one with the highest **gain**; gain ratio is only used to compare
+  features, as in C4.5 (`contin.c`). Before, categorical subsets were chosen by gain ratio, which favours
+  very unbalanced splits and peeled off rare categories one at a time (`purpose NOT IN {a}`, then
+  `purpose NOT IN {b}`, ...).
+- Categorical groupings pay an MDL cost, `log2(number of groupings evaluated) / known cases`, the same
+  principle C4.5 Release 8 applies to numeric thresholds: picking the best of thousands of groupings
+  otherwise overstates the gain. Part of `mdl_penalty` (on by default).
+- Numeric cuts must leave at least `max(min_samples_leaf, min(25, 10% of the known cases per class))` on
+  each side, as in C4.5/C5.0 (`numeric_min_split=True`).
+
+Pruning:
+
+- Subtree raising, as in C4.5/C5.0: a subtree can be replaced by its largest branch
+  (`subtree_raising=True`).
+- New global pruning, as in C5.0: cost-complexity pruning within one standard error of the training
+  errors. On by default (`global_pruning=True`), like C5.0; the old global pass was much weaker.
+
+Defaults and speed:
+
+- `min_samples_leaf=2` by default, C5.0's `minCases`.
+- All binary groupings of a categorical feature are evaluated at once with NumPy: 12 to 23 times faster
+  on features with many categories.
+
+Trees fitted with 0.5.0 differ from those of 0.4.x. To get the 0.4.x behaviour back as far as possible:
+`C5Classifier(min_samples_leaf=1, global_pruning=False, subtree_raising=False, numeric_min_split=False)`.
+
 ## 0.4.2
 
 Works anywhere a scikit-learn estimator works:
