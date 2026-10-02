@@ -108,6 +108,7 @@ class RegrNode:
 from ._export import _TreeExportMixin
 from sklearn.base import BaseEstimator, RegressorMixin
 from . import _validation as _v
+from .tree import _subset_masks
 
 class C5Regressor(_TreeExportMixin, RegressorMixin, BaseEstimator):
     r"""
@@ -122,16 +123,20 @@ class C5Regressor(_TreeExportMixin, RegressorMixin, BaseEstimator):
     **Core behavior**
 
     - **Split criterion**: weighted **SSE reduction**. Numeric thresholds are evaluated at
-      midpoints between distinct sorted values. Categorical features use subset splits
-      (exhaustive up to `max_categories_exhaustive`, ordered scan otherwise). An optional
-      MDL-like penalty (`mdl_penalty_strength`) helps regularize large-cardinality subsets.
+      midpoints between distinct sorted values. Categorical features are split into two
+      groups of categories: every grouping is evaluated up to `max_categories_exhaustive`
+      categories; above that, the categories are ordered by their mean target and the cuts of
+      that order are evaluated, which finds the best grouping for squared error (Fisher, 1958).
+      Only splits that leave at least `min_samples_leaf` of weight on each side are candidates.
+      An optional MDL-like penalty (`mdl_penalty_strength`) regularizes categorical groupings.
     - **Missing values**: During training, samples with missing values on the splitting
       feature are fractionally assigned to both children in proportion to observed weight.
       During prediction, the output is the weighted combination of both branches using
       the stored branch weights.
     - **Pre-pruning**: `min_samples_split` and `min_samples_leaf` enforced on effective weight.
-    - **Post-pruning**: pessimistic pruning controlled by `cf`, implemented as a modest SSE
-      inflation (z²·σ²) to penalize small leaves, plus a conservative global merge pass.
+    - **Post-pruning**: a mild bottom-up pruning controlled by `cf` (a subtree is replaced by
+      a leaf when its SSE reduction is below about z²·σ² of the node). It removes few splits,
+      so `min_samples_leaf` is the parameter to tune, for example by cross-validation.
 
     Parameters
     ----------
@@ -476,195 +481,114 @@ class C5Regressor(_TreeExportMixin, RegressorMixin, BaseEstimator):
         return node
 
     def _best_split(self, X: np.ndarray, y: np.ndarray, w: np.ndarray, sse_parent: float):
-        n, m = X.shape
-        best = None
-        best_score = -float("inf")
+        """
+        Best split of the cases with positive weight, by reduction of the
+        weighted sum of squared errors (SSE).  Cases with a missing value on
+        the candidate feature are shared between the two children in
+        proportion to the known weight on each side (as in C4.5/C5.0), and a
+        split is only a candidate if both children keep at least
+        ``min_samples_leaf`` of weight.  Numeric thresholds and categorical
+        groupings are evaluated with vectorised prefix sums.
+        """
+        n = X.shape[0]
+        rows = np.flatnonzero(w > 0)
+        if rows.size < 2:
+            return None
+        Xs, ys, ws = X[rows], y[rows], w[rows]
+        msl = float(self.min_samples_leaf)
+        best, best_score = None, -float("inf")
         # ties (up to rounding) go to the first candidate, so that weighting a
         # case by 2 and duplicating it grow the same tree
         tol = 1e-9 * max(1.0, abs(float(sse_parent)))
 
-        # Precompute totals for missing assignment
-        for j in range(m):
-            col = X[:, j]
+        def sse(sw_, sy_, sy2_):
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return np.where(sw_ > 0, sy2_ - sy_ * sy_ / np.where(sw_ > 0, sw_, 1.0), 0.0)
+
+        for j in range(Xs.shape[1]):
+            col = Xs[:, j]
             is_cat = bool(self.is_cat_[j])
-            known_mask = np.array([not _isnan_scalar(v) for v in col])
-            w_known = w * known_mask
-            w_miss = w * (~known_mask)
-            sw_known = float(w_known.sum())
-            sw_miss = float(w_miss.sum())
-            if sw_known <= 0.0:  # no known values -> cannot split on this feature
+            if col.dtype.kind == "f":
+                known = ~np.isnan(col)
+            else:
+                known = np.fromiter((not _isnan_scalar(v) for v in col), count=col.shape[0], dtype=bool)
+            if not known.any():
                 continue
+            wm, ym = ws[~known], ys[~known]
+            sw_m, sy_m, sy2_m = float(wm.sum()), float((wm * ym).sum()), float((wm * ym * ym).sum())
+            wk, yk = ws[known], ys[known]
 
             if not is_cat:
-                # numeric split
-                vals = col[known_mask].astype(float, copy=False)
-                yy = y[known_mask]
-                ww = w[known_mask]
-                if len(vals) <= 1:
+                v = col[known].astype(float)
+                order = np.argsort(v, kind="mergesort")
+                v, yo, wo = v[order], yk[order], wk[order]
+                cut = np.nonzero(v[:-1] != v[1:])[0]
+                if cut.size == 0:
                     continue
-                # sort by vals
-                order = np.argsort(vals, kind="mergesort")
-                v = vals[order]
-                yk = yy[order]
-                wk = ww[order]
-
-                # prefix sums
-                sw = np.cumsum(wk)
-                sy = np.cumsum(wk * yk)
-                sy2 = np.cumsum(wk * yk * yk)
-                SW = float(sw[-1]); SY = float(sy[-1]); SY2 = float(sy2[-1])
-
-                # candidates at boundaries where value changes
-                # mid = (v[i] + v[i+1]) / 2
-                unique_boundaries = np.nonzero(v[:-1] != v[1:])[0]
-                if unique_boundaries.size == 0:
-                    continue
-
-                for i in unique_boundaries:
-                    swL = float(sw[i]);    syL = float(sy[i]);    sy2L = float(sy2[i])
-                    swR = SW - swL;        syR = SY - syL;        sy2R = SY2 - sy2L
-                    if swL <= 0 or swR <= 0:
-                        continue
-                    # proportions for missing
-                    pl = swL / (swL + swR)
-                    pr = 1.0 - pl
-                    # augment with missing
-                    swL_eff = swL + pl * sw_miss
-                    swR_eff = swR + pr * sw_miss
-                    syL_eff = syL + pl * float((w_miss * y).sum())
-                    syR_eff = syR + pr * float((w_miss * y).sum())
-                    sy2L_eff = sy2L + pl * float((w_miss * y * y).sum())
-                    sy2R_eff = sy2R + pr * float((w_miss * y * y).sum())
-
-                    # SSE children
-                    sseL = sy2L_eff - (syL_eff * syL_eff) / swL_eff
-                    sseR = sy2R_eff - (syR_eff * syR_eff) / swR_eff
-                    gain_raw = sse_parent - (sseL + sseR)
-
-                    # Score (no MDL penalty for numeric)
-                    score = gain_raw
-
-                    if score > best_score + tol and gain_raw > 0:
-                        thr = 0.5 * (v[i] + v[i+1])
-                        # masks on known
-                        left_known = np.zeros(n, dtype=bool); right_known = np.zeros(n, dtype=bool)
-                        # apply only on known
-                        mask_known_glob = known_mask
-                        left_known[mask_known_glob] = (vals <= thr)
-                        right_known[mask_known_glob] = ~left_known[mask_known_glob]
-                        best = (j, "numeric", float(thr), float(gain_raw), float(pl), left_known, right_known, ~known_mask)
-                        best_score = score
-
+                cw, cy, cy2 = np.cumsum(wo), np.cumsum(wo * yo), np.cumsum(wo * yo * yo)
+                SW, SY, SY2 = cw[-1], cy[-1], cy2[-1]
+                swL, syL, sy2L = cw[cut], cy[cut], cy2[cut]
+                swR, syR, sy2R = SW - swL, SY - syL, SY2 - sy2L
+                pl = swL / SW
+                left_sets = None
             else:
-                # categorical split
-                # collect per-category aggregates
-                cats = []
-                agg = {}  # cat -> (sw, sy, sy2)
-                for i, v in enumerate(col):
-                    wi = w[i]
-                    if wi <= 0: 
-                        continue
-                    if _isnan_scalar(v):
-                        continue
-                    agg.setdefault(v, [0.0, 0.0, 0.0])
-                    a = agg[v]
-                    a[0] += wi
-                    a[1] += wi * y[i]
-                    a[2] += wi * y[i] * y[i]
-                cats = list(agg.keys())
+                vals = col[known]
+                cats = sorted(set(vals.tolist()), key=str)
                 k = len(cats)
                 if k <= 1:
                     continue
-
-                # exhaustion vs ordered scan
-                def eval_subset(selected: set) -> Tuple[float, float, float, float, set]:
-                    # return (gain_raw, score, pl, subset_set)
-                    # compute left sums by summing selected categories
-                    swL = sum(agg[c][0] for c in selected)
-                    syL = sum(agg[c][1] for c in selected)
-                    sy2L = sum(agg[c][2] for c in selected)
-                    swR = sum(agg[c][0] for c in cats) - swL
-                    syR = sum(agg[c][1] for c in cats) - syL
-                    sy2R = sum(agg[c][2] for c in cats) - sy2L
-                    if swL <= 0 or swR <= 0:
-                        return (-1e18, -1e18, 0.5, 0.0, selected)
-
-                    pl = swL / (swL + swR)
-                    # missing augmentation
-                    sw_miss = float((w * (~known_mask)).sum())
-                    sy_miss = float((w * (~known_mask) * y).sum())
-                    sy2_miss = float((w * (~known_mask) * y * y).sum())
-                    swL_eff = swL + pl * sw_miss
-                    swR_eff = swR + (1.0 - pl) * sw_miss
-                    syL_eff = syL + pl * sy_miss
-                    syR_eff = syR + (1.0 - pl) * sy_miss
-                    sy2L_eff = sy2L + pl * sy2_miss
-                    sy2R_eff = sy2R + (1.0 - pl) * sy2_miss
-                    sseL = sy2L_eff - (syL_eff * syL_eff) / swL_eff
-                    sseR = sy2R_eff - (syR_eff * syR_eff) / swR_eff
-                    gain_raw = sse_parent - (sseL + sseR)
-
-                    # MDL-like penalty
-                    if self.mdl_penalty_strength > 0.0:
-                        s = len(selected)
-                        penalty = math.log2(_choose(k, s) + 1e-9)
-                        score = gain_raw - self.mdl_penalty_strength * penalty
-                    else:
-                        score = gain_raw
-                    return (gain_raw, score, pl, 0.0, selected)
-
-                best_local = None
-                best_local_score = -float("inf")
-
+                index = {c: i for i, c in enumerate(cats)}
+                ci = np.fromiter((index[c] for c in vals), count=vals.shape[0], dtype=int)
+                aw = np.bincount(ci, weights=wk, minlength=k)
+                ay = np.bincount(ci, weights=wk * yk, minlength=k)
+                ay2 = np.bincount(ci, weights=wk * yk * yk, minlength=k)
                 if k <= self.max_categories_exhaustive:
-                    # exhaustive (avoid symmetric duplicates by fixing first category in left)
-                    cats_sorted = sorted(cats, key=lambda c: str(c))
-                    fixed = cats_sorted[0]
-                    cat_idx = {c:i for i,c in enumerate(cats_sorted)}
-                    total_masks = (1 << (k - 1)) - 1  # exclude empty and full
-                    for mask in range(1, total_masks):
-                        selected = {fixed}
-                        for i in range(1, k):
-                            if (mask >> (i - 1)) & 1:
-                                selected.add(cats_sorted[i])
-                        if 0 < len(selected) < k:
-                            graw, score, pl, _, sel = eval_subset(selected)
-                            if score > best_local_score and graw > 0:
-                                best_local_score = score
-                                best_local = (graw, score, pl, sel)
+                    M = _subset_masks(k)
                 else:
-                    # ordered scan by category mean (weighted)
-                    stats = []
-                    for c in cats:
-                        swc, syc, _ = agg[c]
-                        mu = syc / swc if swc > 0 else 0.0
-                        stats.append((mu, c))
-                    stats.sort()
-                    ordered = [c for _, c in stats]
-                    # prefix splits
-                    for t in range(1, k):  # 1..k-1
-                        selected = set(ordered[:t])
-                        graw, score, pl, _, sel = eval_subset(selected)
-                        if score > best_local_score and graw > 0:
-                            best_local_score = score
-                            best_local = (graw, score, pl, sel)
-
-                if best_local is not None:
-                    graw, score, pl, sel = best_local[0], best_local[1], best_local[2], best_local[3]
-                    # Build masks for known values
-                    left_known = np.zeros(n, dtype=bool); right_known = np.zeros(n, dtype=bool)
-                    for i, v in enumerate(col):
-                        if _isnan_scalar(v):
-                            continue
-                        if v in sel:
-                            left_known[i] = True
-                        else:
-                            right_known[i] = True
-                    miss_mask = np.array([_isnan_scalar(v) for v in col])
-                    if score > best_score + tol:
-                        best_score = score
-                        best = (j, "categorical", set(sel), float(graw), float(pl), left_known, right_known, miss_mask)
-
+                    # ordering the categories by their mean and cutting the
+                    # ordered list gives the best SSE grouping (Fisher, 1958)
+                    mean = np.where(aw > 0, ay / np.where(aw > 0, aw, 1.0), 0.0)
+                    ordered = np.argsort(mean, kind="mergesort")
+                    M = np.zeros((k - 1, k))
+                    for t in range(1, k):
+                        M[t - 1, ordered[:t]] = 1.0
+                swL, syL, sy2L = M @ aw, M @ ay, M @ ay2
+                SW, SY, SY2 = aw.sum(), ay.sum(), ay2.sum()
+                swR, syR, sy2R = SW - swL, SY - syL, SY2 - sy2L
+                pl = swL / SW
+                left_sets = M
+            pr = 1.0 - pl
+            swLe, swRe = swL + pl * sw_m, swR + pr * sw_m
+            gain = sse_parent - (sse(swLe, syL + pl * sy_m, sy2L + pl * sy2_m)
+                                 + sse(swRe, syR + pr * sy_m, sy2R + pr * sy2_m))
+            ok = (swL > 0) & (swR > 0) & (swLe >= msl) & (swRe >= msl) & (gain > 0)
+            if not ok.any():
+                continue
+            score = gain.copy()
+            if is_cat and self.mdl_penalty_strength > 0.0:
+                sizes = left_sets.sum(axis=1)
+                kk = left_sets.shape[1]
+                score = score - self.mdl_penalty_strength * np.array(
+                    [math.log2(_choose(kk, int(s_)) + 1e-9) for s_ in sizes])
+            score = np.where(ok, score, -np.inf)
+            top = float(score.max())
+            i = int(np.flatnonzero(score >= top - tol)[0])
+            if not top > best_score + tol:
+                continue
+            best_score = top
+            known_glob = np.zeros(n, dtype=bool); known_glob[rows[known]] = True
+            left_known = np.zeros(n, dtype=bool)
+            if not is_cat:
+                thr = 0.5 * (v[cut[i]] + v[cut[i] + 1])
+                left_known[rows[known]] = col[known].astype(float) <= thr
+                split = (j, "numeric", float(thr))
+            else:
+                sel = {cats[c] for c in np.flatnonzero(left_sets[i] > 0)}
+                left_known[rows[known]] = np.fromiter((x in sel for x in col[known]), count=int(known.sum()), dtype=bool)
+                split = (j, "categorical", sel)
+            right_known = known_glob & ~left_known
+            miss = np.zeros(n, dtype=bool); miss[rows[~known]] = True
+            best = split + (float(gain[i]), float(pl[i]), left_known, right_known, miss)
         return best
 
     # ----------------------------- Pruning -----------------------------

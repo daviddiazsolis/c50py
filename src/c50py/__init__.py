@@ -14,4 +14,4 @@ from .rules import C5RulesClassifier
 from ._export import plot_tree, export_graphviz, export_text
 
 __all__ = ["C5Classifier", "C5RulesClassifier", "C5Regressor", "plot_tree", "export_graphviz", "export_text"]
-__version__ = "0.5.0"
+__version__ = "0.5.1"

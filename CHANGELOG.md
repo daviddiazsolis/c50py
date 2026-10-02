@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.1
+
+Regression and documentation.
+
+- `C5Regressor`: the split search is vectorised with NumPy (about 20 times faster on the Ames house
+  prices data: 5 seconds instead of 107 for 1,000 houses and 79 columns).
+- `C5Regressor`: only splits that leave at least `min_samples_leaf` on each side are candidates.
+  Before, the best split was chosen first and, if it left too few cases on one side, the node
+  became a leaf, so the tree could stop growing too early.
+- `C5Regressor`: the grouping "one category against all the others" was never evaluated for the
+  first category in the exhaustive search; it is now. Above `max_categories_exhaustive`
+  categories, cuts of the categories ordered by mean target are evaluated, as before.
+- New notebook `06_regression_house_prices.ipynb`: `C5Regressor` on the Ames data against
+  scikit-learn's regression tree and HistGradientBoosting, the rule behind each price, and a small
+  example where grouping categories matters.
+- CI: the pinned versions of the scikit-learn 1.3 job are quoted again.
+
+Regression trees fitted with 0.5.1 can differ from those of 0.5.0.
+
 ## 0.5.0
 
 The complete C5.0: rulesets, winnowing and C5.0's boosting join the tree, and the tree is closer to

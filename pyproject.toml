@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "c50py"
-version = "0.5.0"
+version = "0.5.1"
 description = "C5.0 decision trees for Python: native categorical splits, missing values, pruning and boosting, as scikit-learn estimators"
 readme = "README.md"
 license = "MIT"

@@ -33,6 +33,7 @@ confidence and lift), which turn a churn or credit model into segments a busines
 | [03 c50py vs gradient boosting](examples/notebooks/03_c50py_vs_gradient_boosting.ipynb) | How much accuracy a readable model gives up against HistGradientBoosting and random forests, and when it does not. |
 | [04 Rules, rulesets and churn campaigns](examples/notebooks/04_rules_rulesets_churn_campaigns.ipynb) | Rules of the tree vs C5.0 rulesets, turned into retention campaigns by reason, down to each customer. |
 | [05 Missing values and winnowing](examples/notebooks/05_missing_values_and_winnowing.ipynb) | How C5.0 handles gaps and irrelevant columns, what it buys and where it falls short. |
+| [06 Regression: house prices](examples/notebooks/06_regression_house_prices.ipynb) | `C5Regressor` on mixed data against scikit-learn's regression tree and gradient boosting, and the rule behind each price. |
 
 Each notebook opens in Colab from the badge at its top.
 
@@ -121,6 +122,11 @@ print(grid.best_params_, grid.score(X_te, y_te))
   scikit-learn's colours).
 
 ## Regression
+
+C5.0 itself only builds classification trees (Quinlan's programs for numeric targets are M5 and
+Cubist). `C5Regressor` is a regression tree, split by reduction of squared error, that keeps
+C5.0's categorical groupings and fractional handling of missing values. Its pruning is mild, so
+tune `min_samples_leaf` (notebook 06 shows how, on house prices).
 
 ```python
 from sklearn.datasets import load_diabetes

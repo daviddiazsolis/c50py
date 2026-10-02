@@ -19,7 +19,7 @@ jobs:
           - { os: windows-latest, python: "3.12", sklearn: "" }
           - { os: macos-latest,   python: "3.12", sklearn: "" }
           # oldest supported scikit-learn
-          - { os: ubuntu-latest,  python: "3.11", sklearn: "scikit-learn==1.3.2 numpy<2 pandas<2.3" }
+          - { os: ubuntu-latest,  python: "3.11", sklearn: "'scikit-learn==1.3.2' 'numpy<2' 'pandas<2.3'" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

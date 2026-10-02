@@ -59,3 +59,33 @@ def test_regressor_missing_values():
     regr.fit(X, y)
     pred = regr.predict(X)
     assert len(pred) == len(y)
+
+def test_regressor_split_search_respects_min_samples_leaf():
+    """A split that would leave too few cases on one side is not a candidate;
+    the tree keeps growing with the best admissible split instead of stopping."""
+    import numpy as np
+    from c50py import C5Regressor
+    rng = np.random.default_rng(0)
+    x1 = rng.uniform(0, 1, 400)
+    x2 = rng.uniform(0, 1, 400)
+    y = 5.0 * (x1 > 0.5) + rng.normal(0, 0.1, 400)
+    y[0] += 50.0                                    # an outlier that a 1-case leaf would isolate
+    X = np.c_[x1, x2]
+    m = C5Regressor(min_samples_leaf=20, pruning=False).fit(X, y)
+    assert not m.tree_.is_leaf
+    assert m.score(X, y) > 0.5
+
+
+def test_regressor_single_category_against_the_rest():
+    """The grouping {one category} vs {all others} is evaluated."""
+    import numpy as np
+    import pandas as pd
+    from c50py import C5Regressor
+    rng = np.random.default_rng(1)
+    cat = rng.choice(list("abcd"), 400)
+    y = np.where(cat == "a", 10.0, 0.0) + rng.normal(0, 0.1, 400)
+    X = pd.DataFrame({"c": pd.Categorical(cat)})
+    m = C5Regressor(min_samples_leaf=5).fit(X, y)
+    root = m.tree_
+    assert not root.is_leaf
+    assert set(root.threshold) in ({"a"}, {"b", "c", "d"})
