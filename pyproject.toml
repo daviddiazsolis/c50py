@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "c50py"
-version = "0.5.1"
-description = "C5.0 decision trees for Python: native categorical splits, missing values, pruning and boosting, as scikit-learn estimators"
+version = "0.5.2"
+description = "C5.0 decision trees and rulesets for Python: native categorical splits, missing values, boosting and rules exported to SQL, as scikit-learn estimators"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "David Díaz Solís", email = "daviddiazsolis@gmail.com" }]
-keywords = ["decision tree", "C5.0", "C4.5", "categorical", "interpretable machine learning", "scikit-learn", "rules"]
+keywords = ["decision tree", "C5.0", "C4.5", "categorical", "interpretable machine learning", "scikit-learn", "rules", "rulesets", "SQL", "explainable AI"]
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.21",

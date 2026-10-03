@@ -116,10 +116,35 @@ print(grid.best_params_, grid.score(X_te, y_te))
 - **Rulesets**: `C5RulesClassifier` (or `tree.build_ruleset(X, y)`) builds C5.0's rulesets;
   `export_ruleset()` lists them with confidence and lift, `apply_ruleset(X)` gives the rule behind
   each prediction.
+- **Rules in production**: `to_sql()` writes trees and rulesets as SQL; rules also export to JSON
+  and pandas queries.
 - **Drawings identical to scikit-learn**: `plot_tree`, `export_graphviz` and
   `export_text`, with the same parameters. Boxes use c50py's own palette so a
   C5.0 tree is easy to tell apart from a CART tree (`palette="sklearn"` gives
   scikit-learn's colours).
+
+## Deploying rules: SQL, JSON, pandas
+
+A model made of rules does not need Python in production. `to_sql` writes the model as one SQL
+query, so it can run inside the database or BI tool where the data already are:
+
+```python
+rules = C5RulesClassifier().fit(X, y)
+print(rules.to_sql("customers"))   # SELECT *, vote_0, vote_1, prediction ... FROM customers
+tree.to_sql("customers")           # SELECT *, rule_id, prediction ... (one CASE WHEN per leaf)
+```
+
+The ruleset query reproduces `predict` exactly (rules vote with their confidence, as in C5.0);
+the tree query reproduces `apply_rules` (a `NULL` follows the branch that held more training
+cases). `export_rules(format="json")` and `export_ruleset(format="json")` give the rules as data
+for other programs, and `format="pandas"` gives one `DataFrame.query` string per rule.
+
+## For AI agents
+
+[`llms.txt`](llms.txt) summarises when and how to use the package for language models and coding
+agents, and [`skills/interpretable-tabular-rules`](skills/interpretable-tabular-rules/SKILL.md) is
+an Agent Skill that tells an agent to use C5.0 instead of one-hot encoding plus CART when a
+readable model is needed on tabular data with categorical columns.
 
 ## Regression
 
@@ -146,6 +171,7 @@ print(reg.export_rules()[:3])
 | `global_pruning` | `True` | C5.0's global cost-complexity pruning (classifier). |
 | `trials` | `1` | Number of boosted trees (classifier). |
 | `winnow` | `False` | C5.0's winnowing of irrelevant columns before the final tree. |
+| `class_weight` | `None` | `"balanced"` or `{class: weight}` for imbalanced classes (classifiers). |
 | `categorical_features` | `None` | Extra columns to treat as categorical, by name or index. |
 | `infer_categorical` | `True` | Detect categorical columns from their dtype or content. |
 | `max_categories_exhaustive` | `12` | Up to this many categories every binary subset is evaluated. |

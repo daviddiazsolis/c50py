@@ -118,7 +118,7 @@ class C5Regressor(_TreeExportMixin, RegressorMixin, BaseEstimator):
                 max_categories_exhaustive=12, mdl_penalty_strength=0.0,
                 min_sse_gain=0.0, feature_names=None, random_state=None, verbose=0)
 
-    A C5.0-like regression tree with a scikit-learn–style API.
+    A C5.0-like regression tree with a scikit-learn style API.
 
     **Core behavior**
 
@@ -326,7 +326,7 @@ class C5Regressor(_TreeExportMixin, RegressorMixin, BaseEstimator):
             print(f"{indent}else:")
             self._print_node(node.children["right"], indent + "  ", fn)
 
-    def export_rules(self, feature_names: Optional[List[str]] = None) -> List[str]:
+    def export_rules(self, feature_names: Optional[List[str]] = None, format: str = "text") -> List[str]:
         """
         Export all decision rules in the fitted regression tree.
 
@@ -336,15 +336,95 @@ class C5Regressor(_TreeExportMixin, RegressorMixin, BaseEstimator):
         features.  Custom feature names can be supplied; if omitted the
         names provided at construction time are used.
 
-            If the model has not been fitted.
+        ``format="json"`` returns a list of dicts (conditions, predicted
+        value, cases) and ``format="pandas"`` one ``DataFrame.query`` string
+        per rule.  See also :meth:`to_sql`.  Raises ``ValueError`` if the
+        model has not been fitted.
         """
         # Guard against calling before fit
         if getattr(self, 'tree_', None) is None:
             raise ValueError("Estimator not fitted. Call fit(...) first.")
+        if format != "text":
+            from ._deploy import tree_rules_export
+            return tree_rules_export(self, format, feature_names, regression=True)
         fn = self._maybe_feature_names(feature_names)
         rules: List[str] = []
         self._collect_rules(self.tree_, [], rules, fn)
         return rules
+
+    def apply(self, X):
+        """
+        Index of the leaf (= rule of the tree) each row falls in, as
+        scikit-learn's ``apply``.  The index is the position of the rule in
+        :meth:`export_rules`.  A row with a missing value on a tested column
+        follows the branch that held more training cases (``predict`` instead
+        averages both branches).
+        """
+        if getattr(self, 'tree_', None) is None:
+            raise ValueError("Estimator not fitted. Call fit(...) first.")
+        X = _v.validate_predict(self, X)
+        leaf_id, counter = {}, [0]
+
+        def number(node):
+            if node.is_leaf or not node.children:
+                leaf_id[id(node)] = counter[0]
+                counter[0] += 1
+            else:
+                number(node.children["left"])
+                number(node.children["right"])
+        number(self.tree_)
+        out = np.empty(X.shape[0], dtype=int)
+        for i, x in enumerate(X):
+            node = self.tree_
+            while not (node.is_leaf or not node.children):
+                v = x[node.feature_index]
+                if _isnan_scalar(v):
+                    pl, pr = node.branch_weights if node.branch_weights is not None else (0.5, 0.5)
+                    go_left = pl >= pr
+                elif node.split_type == "numeric":
+                    go_left = float(v) <= node.threshold
+                else:
+                    go_left = v in node.threshold
+                node = node.children["left" if go_left else "right"]
+            out[i] = leaf_id[id(node)]
+        return out
+
+    def apply_rules(self, X, *, feature_names: Optional[List[str]] = None):
+        """
+        The rule of the tree that each row follows, as a DataFrame with
+        ``rule_id`` (position in :meth:`export_rules`), ``rule`` (its tests),
+        ``prediction`` (the leaf's mean) and ``cases`` (training weight in the
+        leaf), indexed like ``X`` when it is a DataFrame.
+        """
+        import pandas as pd
+        index = X.index if hasattr(X, "index") and hasattr(X, "columns") else None
+        ids = self.apply(X)
+        leaves = []
+
+        def collect(node):
+            if node.is_leaf or not node.children:
+                leaves.append(node)
+            else:
+                collect(node.children["left"])
+                collect(node.children["right"])
+        collect(self.tree_)
+        rules = [r.rsplit(" => ", 1)[0] for r in self.export_rules(feature_names=feature_names)]
+        return pd.DataFrame({"rule_id": ids,
+                             "rule": [rules[i] for i in ids],
+                             "prediction": [float(leaves[i].predicted_value) for i in ids],
+                             "cases": [float(leaves[i].n_samples) for i in ids]}, index=index)
+
+    def to_sql(self, table: str = "data", *, feature_names: Optional[List[str]] = None) -> str:
+        """
+        The rules of the tree as one SQL query, ``SELECT *, rule_id,
+        prediction FROM table``, with a ``CASE WHEN`` per leaf.  A ``NULL`` on
+        a tested column follows the branch that held more training cases
+        (``predict`` instead averages both branches).
+        """
+        if getattr(self, 'tree_', None) is None:
+            raise ValueError("Estimator not fitted. Call fit(...) first.")
+        from ._deploy import tree_to_sql
+        return tree_to_sql(self, table, feature_names, regression=True)
 
     def _collect_rules(self, node, parts: List[str], rules: List[str], fn=None):
         if node is None:

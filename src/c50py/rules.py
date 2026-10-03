@@ -511,6 +511,9 @@ class C5RulesClassifier(ClassifierMixin, BaseEstimator):
     infer_categorical, int_as_categorical, max_categories_exhaustive, winnow, feature_names
         As in :class:`C5Classifier`.  They control the tree the rules are
         built from; ``cf`` (pruning of that tree) is the main one.
+    class_weight : dict, "balanced" or None, default=None
+        As in :class:`C5Classifier`.  With class weights, the cases, errors
+        and confidence reported for each rule are weighted.
 
     Attributes
     ----------
@@ -549,6 +552,7 @@ class C5RulesClassifier(ClassifierMixin, BaseEstimator):
         max_categories_exhaustive=12,
         winnow=False,
         feature_names=None,
+        class_weight=None,
     ):
         self.cf = cf
         self.min_samples_leaf = min_samples_leaf
@@ -565,6 +569,7 @@ class C5RulesClassifier(ClassifierMixin, BaseEstimator):
         self.max_categories_exhaustive = max_categories_exhaustive
         self.winnow = winnow
         self.feature_names = feature_names
+        self.class_weight = class_weight
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
@@ -586,6 +591,9 @@ class C5RulesClassifier(ClassifierMixin, BaseEstimator):
         X, y, _ = _v.validate_fit(self, X, y, y_numeric=False)
         check_classification_targets(y)
         w = _v.sample_weights(sample_weight, X)
+        if self.class_weight is not None:
+            from sklearn.utils.class_weight import compute_sample_weight
+            w = w * compute_sample_weight(self.class_weight, y)
         tree = C5Classifier(**self._tree_params()).fit(Xraw, y, sample_weight=w)
         self._set_from_tree(tree, X, y, w)
         return self
@@ -663,12 +671,20 @@ class C5RulesClassifier(ClassifierMixin, BaseEstimator):
         proba = self.predict_proba(X)          # checks that the model is fitted
         return self.classes_[np.argmax(proba, axis=1)]
 
-    def export_ruleset(self, *, feature_names=None, class_names=None, as_frame=False):
+    def export_ruleset(self, *, feature_names=None, class_names=None, as_frame=False, format="text"):
         """
         The ruleset, one rule per line (or a DataFrame with ``as_frame=True``):
         ``Rule k: IF <tests> THEN <class>  [cases, errors, confidence, lift]``.
         Rules are sorted by confidence; the last line is the default class.
+
+        ``format="json"`` returns a dict with the rules (conditions,
+        prediction, vote, statistics), the default class and how to combine
+        the votes, for other programs; ``format="pandas"`` returns one
+        ``DataFrame.query`` string per rule.  See also :meth:`to_sql`.
         """
+        if format != "text":
+            from ._deploy import ruleset_export
+            return ruleset_export(self, format, feature_names, class_names)
         names = feature_names if feature_names is not None else self.feature_names_
         rows = []
         for i, r in enumerate(self.rules_, start=1):
@@ -684,6 +700,19 @@ class C5RulesClassifier(ClassifierMixin, BaseEstimator):
                f"lift={d['lift']:.2f}]" for d in rows]
         out.append(f"Default: {_v.class_name(self, self.default_class_, class_names)}")
         return out
+
+    def to_sql(self, table="data", *, feature_names=None, class_names=None):
+        """
+        The ruleset as one SQL query that reproduces :meth:`predict`: every
+        rule adds its vote to its class, the class with most votes wins (ties
+        go to the default class, then to the first class), and rows that no
+        rule covers get the default class.  Returns
+        ``SELECT *, vote_0, vote_1, ..., prediction``.
+        """
+        if not hasattr(self, "rules_"):
+            raise ValueError("Estimator not fitted. Call fit(...) first.")
+        from ._deploy import ruleset_to_sql
+        return ruleset_to_sql(self, table, feature_names, class_names)
 
     def apply_ruleset(self, X, *, feature_names=None, class_names=None):
         """

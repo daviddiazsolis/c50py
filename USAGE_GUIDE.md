@@ -120,6 +120,19 @@ ruleset.apply_ruleset(X_test)                           # rule behind each predi
 `examples/notebooks/04_rules_rulesets_churn_campaigns.ipynb` uses them to split customers at risk of
 leaving by reason and assign a retention campaign to each.
 
+**Rules in production.** `to_sql` writes the model as a SQL query, so it can be applied inside a
+database without Python:
+
+```python
+print(ruleset.to_sql("customers"))     # reproduces ruleset.predict exactly
+print(clf.to_sql("customers"))         # one CASE WHEN per leaf, as clf.apply_rules
+ruleset.export_ruleset(format="json")  # rules as data
+clf.export_rules(format="pandas")      # one DataFrame.query string per rule
+```
+
+The regressor has the same tools: `reg.apply_rules(X)` (rule, predicted value and cases of each
+row), `reg.to_sql("houses")` and `reg.export_rules(format="json")`.
+
 ### 4. Pruning: what `cf` and `min_samples_leaf` do
 
 `c50py` prunes like C4.5: every leaf with `N` cases and `E` errors is charged the upper limit of the
@@ -129,6 +142,11 @@ errors do not exceed the subtree's, and the process runs bottom-up. `cf` is the 
 imbalanced targets it can remove leaves that only refined probabilities without changing the
 predicted class; if you care about ranking (AUC) rather than accuracy, use `pruning=False` with a
 sensible `min_samples_leaf`, or a smaller `cf`.
+
+**Imbalanced classes.** `class_weight="balanced"` (or a dict such as `{"fraud": 10, "ok": 1}`)
+gives the rare class more weight in the splits, the pruning and the leaf probabilities, as in
+scikit-learn's trees; it is also available in `C5RulesClassifier`. The alternative is to keep the
+weights and choose the decision threshold on `predict_proba` by the cost of each error.
 
 ### 5. Boosting and winnowing
 

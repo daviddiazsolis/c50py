@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.2
+
+Rules in production, and documentation for AI agents.
+
+- New `to_sql(table)` on `C5Classifier`, `C5RulesClassifier` and `C5Regressor`: the model as one
+  SQL query. For a ruleset it reproduces `predict` exactly (votes, ties, default class); for a
+  tree it reproduces `apply_rules` (a `NULL` follows the branch that held more training cases).
+  Checked against the models with SQLite in the tests.
+- `export_rules(format="json" | "pandas")` and `export_ruleset(format="json" | "pandas")`: rules
+  as data for other programs, or as `DataFrame.query` strings.
+- `class_weight` (`"balanced"` or a dict) in `C5Classifier` and `C5RulesClassifier`, as in
+  scikit-learn's trees, for imbalanced classes. It multiplies `sample_weight`. Default `None`:
+  results are unchanged.
+- `C5Regressor.apply(X)` and `C5Regressor.apply_rules(X)`: the leaf and the rule of each row, with
+  its predicted value and training cases, as in the classifier.
+- `llms.txt` (when and how to use the package, for language models), `AGENTS.md` (for coding agents
+  working on the repository) and an Agent Skill in `skills/interpretable-tabular-rules`.
+- Notebook 04 shows the campaign rules deployed in SQL.
+
 ## 0.5.1
 
 Regression and documentation.

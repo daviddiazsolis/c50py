@@ -286,6 +286,13 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
     gain_ratio_avg_gain : bool, default=True
         As in C4.5, only splits whose information gain is at least the average
         gain compete by gain ratio.
+    class_weight : dict, "balanced" or None, default=None
+        Weights for the classes, as in scikit-learn's trees: ``"balanced"``
+        gives each class a weight inversely proportional to its frequency, a
+        dict ``{class: weight}`` sets them by hand.  They multiply
+        ``sample_weight``, so they affect the splits, the pruning and the
+        leaf probabilities.  Useful with imbalanced classes, when the
+        minority class matters more than overall accuracy.
     verbose : int, default=0
         Verbosity level.  Currently unused.
 
@@ -325,6 +332,7 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
         numeric_min_split=True,
         subtree_raising=True,
         winnow=False,
+        class_weight=None,
         verbose=0,
     ):
         # scikit-learn convention: store the parameters exactly as given
@@ -350,6 +358,7 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
         self.numeric_min_split = numeric_min_split
         self.subtree_raising = subtree_raising
         self.winnow = winnow
+        self.class_weight = class_weight
         self.verbose = verbose
 
     def __sklearn_tags__(self):
@@ -383,6 +392,9 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
         X, y, dtypes = _v.validate_fit(self, X, y, y_numeric=False)
         check_classification_targets(y)
         w = _v.sample_weights(sample_weight, X)
+        if self.class_weight is not None:
+            from sklearn.utils.class_weight import compute_sample_weight
+            w = w * compute_sample_weight(self.class_weight, y)
         n_features = X.shape[1]
         self.n_features_ = n_features
         self.feature_names_ = _v.resolve_feature_names(self, feature_names, n_features)
@@ -449,7 +461,7 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
         if first.sum() < 2 or second.sum() < 1:
             return []
         params = self.get_params()
-        params.update(winnow=False, trials=1, pruning=False,
+        params.update(winnow=False, trials=1, pruning=False, class_weight=None,
                       min_samples_leaf=max(self.min_samples_leaf / 2, 2),
                       categorical_features=list(self.categorical_features_), infer_categorical=False,
                       feature_names=list(self.feature_names_))
@@ -659,9 +671,12 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
         rs = C5RulesClassifier(**params)
         Xa, ya, _ = _v.validate_fit(rs, X, y, y_numeric=False)
         w = _v.sample_weights(sample_weight, Xa)
+        if self.class_weight is not None:
+            from sklearn.utils.class_weight import compute_sample_weight
+            w = w * compute_sample_weight(self.class_weight, ya)
         return rs._set_from_tree(self, Xa, ya, w)
 
-    def export_rules(self, *, feature_names=None, class_names=None):
+    def export_rules(self, *, feature_names=None, class_names=None, format="text"):
         """
         Export all decision rules in the tree as a list of human‑readable strings.
 
@@ -678,19 +693,42 @@ class C5Classifier(_TreeExportMixin, ClassifierMixin, BaseEstimator):
         class_names : list[str], optional
             Names for the classes, ordered according to ``self.classes_``.
 
+        format : {"text", "json", "pandas"}, default="text"
+            ``"json"``: a list of dicts (conditions, prediction, class
+            distribution), for other programs.  ``"pandas"``: one
+            ``DataFrame.query`` string per rule.  See also :meth:`to_sql`.
+
         Returns
         -------
-        list[str]
-            List of rule strings.
+        list[str] or list[dict]
+            List of rule strings (or dicts with ``format="json"``).
         """
         # Exporting rules is only supported for single trees
         if self.trials != 1:
             raise ValueError("export_rules available only when trials=1")
         if getattr(self, 'tree_', None) is None:
             raise ValueError("Estimator not fitted. Call fit(...) first.")
+        if format != "text":
+            from ._deploy import tree_rules_export
+            return tree_rules_export(self, format, feature_names, class_names)
         rules: list[str] = []
         self._collect_rules(self.tree_, [], rules, self._maybe_feature_names(feature_names), class_names)
         return rules
+
+    def to_sql(self, table="data", *, feature_names=None, class_names=None):
+        """
+        The rules of the tree as one SQL query: ``SELECT *, rule_id,
+        prediction FROM table``, with a ``CASE WHEN`` per leaf, so the model
+        can be applied inside a database.  Column names are the feature names
+        (quoted); a ``NULL`` on a tested column follows the branch that held
+        more training cases, as in :meth:`apply_rules`.  Single trees only.
+        """
+        if self.trials != 1:
+            raise ValueError("to_sql is only available when trials=1")
+        if getattr(self, "tree_", None) is None:
+            raise ValueError("Estimator not fitted. Call fit(...) first.")
+        from ._deploy import tree_to_sql
+        return tree_to_sql(self, table, feature_names, class_names)
 
     def print_tree(self, feature_names=None, class_names=None):
         """

@@ -1,0 +1,70 @@
+# c50py
+
+> C5.0 decision trees and rulesets for Python, as scikit-learn estimators. Use it instead of
+> `pd.get_dummies` + `sklearn.tree.DecisionTreeClassifier` when a table has categorical columns
+> and the model has to be read, explained or deployed as rules.
+
+Install: `pip install c50py` (Python 3.9+, numpy, scikit-learn; pandas optional).
+
+## When to use it
+
+- Tabular data with categorical columns (region, product, plan, sector) and a model that people
+  must read: credit, churn, fraud rules, eligibility, segmentation. C5.0 splits a categorical
+  column into two groups of categories in one test (`region IN {North, South}`); CART needs one
+  dummy column per category and asks about them one at a time, and often never uses the column.
+- Data with missing values: no imputation needed (fractional cases, as in C4.5/C5.0).
+- You need the rule behind each prediction (`apply_rules`), a compact rule model
+  (`C5RulesClassifier`), or rules deployed in SQL (`to_sql`).
+- Do not use it when only accuracy matters on large numeric data: gradient boosting
+  (`HistGradientBoostingClassifier`) is more accurate than any single tree. `C5Classifier(trials=10)`
+  (C5.0 boosting) is about as accurate as HistGradientBoosting on mixed data, but not readable.
+
+## Minimal API
+
+```python
+from c50py import C5Classifier, C5RulesClassifier, C5Regressor
+
+# X: pandas DataFrame as it comes. category/object/string/bool columns are treated as categorical;
+# NaN is allowed. No one-hot encoding, no imputation.
+tree = C5Classifier().fit(X, y)                  # defaults = C5.0's (cf=0.25, min_samples_leaf=2)
+tree.predict(X); tree.predict_proba(X)
+tree.export_rules()                              # one rule per leaf, list of str
+tree.apply_rules(X)                              # DataFrame: rule_id, rule, prediction per row
+tree.to_sql("customers")                         # SQL query with a CASE WHEN per leaf
+
+rules = C5RulesClassifier().fit(X, y)            # C5.0 ruleset: fewer, shorter, overlapping rules
+rules.export_ruleset(as_frame=True)              # conditions, prediction, cases, confidence, lift
+rules.apply_ruleset(X)                           # rule behind each prediction
+rules.to_sql("customers")                        # reproduces rules.predict exactly in SQL
+rules.export_ruleset(format="json")              # for other programs
+
+C5Classifier(winnow=True)                        # C5.0 feature screening; dropped: winnowed_features_
+C5Classifier(trials=10)                          # C5.0 boosting
+C5Regressor(min_samples_leaf=10)                 # regression tree with categorical groupings
+```
+
+All three are scikit-learn estimators (they pass `check_estimator`): `Pipeline`, `GridSearchCV`,
+`cross_val_score` and `clone` work. Tune `cf` (0.05 to 0.5, smaller prunes more) and
+`min_samples_leaf` by cross-validation when the tree must be small.
+
+## Gotchas
+
+- Do not one-hot encode before fitting: it removes the advantage. Pass the categorical columns as
+  pandas `category` (or list them in `categorical_features=[...]`).
+- Integer-coded categories (e.g. `area_code`) are numeric unless listed in `categorical_features`
+  or cast to `category`.
+- `export_rules`, `apply_rules`, `to_sql` need a single tree (`trials=1`).
+- Rules of the tree are mutually exclusive; rules of a ruleset can overlap and vote.
+- `C5Regressor` pruning is mild: tune `min_samples_leaf`.
+- Imbalanced classes: `C5Classifier(class_weight="balanced")` (also in `C5RulesClassifier`), or tune
+  the decision threshold on `predict_proba`. Error-based pruning removes leaves that only refine
+  the probability of a rare class; use `pruning=False` with a sensible `min_samples_leaf` when
+  the goal is ranking by risk (AUC).
+
+## Docs
+
+- README: https://github.com/daviddiazsolis/c50py
+- Usage guide: https://github.com/daviddiazsolis/c50py/blob/main/USAGE_GUIDE.md
+- Notebooks (Colab): https://github.com/daviddiazsolis/c50py/tree/main/examples/notebooks
+- Benchmark against CART, HistGradientBoosting and the original C5.0 (R):
+  https://github.com/daviddiazsolis/c50py/blob/main/benchmarks/results/summary.md
